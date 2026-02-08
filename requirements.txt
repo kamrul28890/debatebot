@@ -1,0 +1,10 @@
+openai
+azure-cognitiveservices-speech
+requests
+beautifulsoup4
+tiktoken
+pydub
+pyttsx3
+colorama
+numpy
+pandas
