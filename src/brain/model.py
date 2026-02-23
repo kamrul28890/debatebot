@@ -1,0 +1,251 @@
+"""
+src/brain/model.py
+
+The DebateBrain: GPT-4 powered persona engine with:
+- Rich persona prompts loaded from file
+- RAG: real quotes injected into context from debate transcripts
+- Conversation memory (last 8 turns)
+- Automatic topic rotation every 4 turns
+- Graceful fallback if RAG unavailable (zero degradation)
+"""
+
+import os
+import sys
+import random
+from typing import List, Optional
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
+import openai
+import keys
+from src.brain.rag import RAGRetriever
+
+# ── Debate topics ──────────────────────────────────────────────────────────────
+DEBATE_TOPICS = [
+    "the economy and inflation",
+    "immigration and border security",
+    "foreign policy and NATO",
+    "healthcare and social security",
+    "crime and public safety",
+    "climate change and energy",
+    "democracy and the 2020 election",
+    "China and trade policy",
+]
+
+INTERJECTIONS = {
+    "trump": [
+        "Wrong.",
+        "Excuse me — that's just not true.",
+        "Nobody believes that.",
+        "False. Totally false.",
+        "That's a lie. A total lie.",
+    ],
+    "biden": [
+        "C'mon, man.",
+        "That's — look, that's just malarkey.",
+        "Not true. Not a word of it's true.",
+        "Will you just — will you stop?",
+        "Here's what actually happened—",
+    ],
+}
+
+
+class DebateBrain:
+    """
+    Core AI brain for a debate persona.
+
+    RAG behavior:
+    - Retrieves 3-4 real quotes semantically similar to opponent's statement
+    - Injects them as a block: "Here's how you have spoken about this before:"
+    - If RAG unavailable/fails -> silently skips, normal prompt used
+    - RAG enrichment is purely additive — never replaces or degrades the response
+    """
+
+    def __init__(self, persona: str):
+        assert persona in ("trump", "biden", "siskind"), f"Unknown persona: {persona}"
+        self.persona = persona
+        self.topic_index = 0
+        self.turn_count = 0
+        self.rag_hits = 0
+        self.rag_misses = 0
+
+        # ── Azure OpenAI client ────────────────────────────────────────────────
+        self.client = openai.AzureOpenAI(
+            api_key=keys.azure_openai_key,
+            api_version=keys.azure_openai_api_version,
+            azure_endpoint=keys.azure_openai_endpoint,
+        )
+        self.deployment = keys.azure_openai_deployment
+
+        # ── Load persona prompt from file ──────────────────────────────────────
+        persona_file = os.path.join(
+            os.path.dirname(__file__), "personas", f"{persona}.txt"
+        )
+        if os.path.exists(persona_file):
+            with open(persona_file, "r") as f:
+                self.persona_prompt = f.read()
+        else:
+            self.persona_prompt = (
+                f"You are {persona.title()} in a presidential debate. "
+                "Keep answers short, punchy, and completely in character."
+            )
+
+        # ── RAG retriever (graceful degradation if unavailable) ────────────────
+        print(f"[Brain:{persona}] Initializing RAG...")
+        try:
+            self.rag = RAGRetriever(persona)
+            if self.rag.is_ready():
+                print(f"[Brain:{persona}] ✅ RAG ready — {self.rag.corpus_size()} quotes indexed")
+            else:
+                print(f"[Brain:{persona}] ⚠️  RAG not ready — will run without retrieval")
+        except Exception as e:
+            print(f"[Brain:{persona}] ⚠️  RAG init error ({e}) — running without retrieval")
+            self.rag = None
+
+        # ── Conversation history ───────────────────────────────────────────────
+        self.history = []
+
+    # ── Public API ─────────────────────────────────────────────────────────────
+
+    def generate_response(self, opponent_text: str) -> str:
+        """
+        Generate a debate response to opponent_text.
+        RAG quotes are injected into the system prompt if available.
+        """
+        self.turn_count += 1
+
+        system_prompt = self._build_system_prompt(opponent_text)
+        self.history.append({"role": "user", "content": opponent_text})
+
+        messages = (
+            [{"role": "system", "content": system_prompt}]
+            + self.history[-8:]     # keep last 8 turns for memory
+        )
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.deployment,
+                messages=messages,
+                max_tokens=120,
+                temperature=0.88,
+                top_p=0.95,
+                frequency_penalty=0.3,
+                presence_penalty=0.1,
+            )
+            reply = response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"[Brain:{self.persona}] API error: {e}")
+            reply = self._fallback_response()
+
+        self.history.append({"role": "assistant", "content": reply})
+        return reply
+
+    def generate_interjection(self) -> str:
+        """Quick one-liner interjection when opponent is still talking."""
+        return random.choice(INTERJECTIONS.get(self.persona, ["..."]))
+
+    def get_opening_statement(self) -> str:
+        return self.generate_response(
+            "Please give your opening statement for this presidential debate."
+        )
+
+    def reset(self):
+        self.history = []
+        self.turn_count = 0
+        self.topic_index = 0
+
+    def current_topic(self) -> str:
+        return DEBATE_TOPICS[self.topic_index]
+
+    def rag_stats(self) -> dict:
+        return {
+            "hits": self.rag_hits,
+            "misses": self.rag_misses,
+            "corpus_size": self.rag.corpus_size() if self.rag else 0,
+            "ready": self.rag.is_ready() if self.rag else False,
+        }
+
+    # ── Internal ───────────────────────────────────────────────────────────────
+
+    def _build_system_prompt(self, opponent_text: str) -> str:
+        """
+        Builds the full system prompt for this turn:
+          1. Base persona prompt (from personas/trump.txt etc.)
+          2. Topic rotation reminder (every 4 turns)
+          3. RAG block with real matching quotes (if available)
+        """
+        parts = [self.persona_prompt]
+
+        # Rotate topic every 4 turns
+        if self.turn_count % 4 == 0 and self.turn_count > 0:
+            self.topic_index = (self.topic_index + 1) % len(DEBATE_TOPICS)
+            topic = DEBATE_TOPICS[self.topic_index]
+            parts.append(
+                f"\n[DEBATE NOTE: Steer your answer toward: {topic}.]"
+            )
+
+        # RAG injection — purely additive, silent on failure
+        rag_block = self._get_rag_block(opponent_text)
+        if rag_block:
+            parts.append(rag_block)
+            self.rag_hits += 1
+        else:
+            self.rag_misses += 1
+
+        return "\n".join(parts)
+
+    def _get_rag_block(self, query: str) -> Optional[str]:
+        """
+        Retrieve relevant real quotes and format as a prompt injection block.
+        Returns None silently on any failure — never raises.
+        """
+        if self.rag is None or not self.rag.is_ready():
+            return None
+
+        try:
+            quotes = self.rag.retrieve(query, k=4)
+            if not quotes:
+                return None
+
+            lines = [
+                "",
+                "=== YOUR REAL QUOTES ON THIS TOPIC ===",
+                "These are things you have actually said. Use this voice and style:",
+            ]
+            for i, q in enumerate(quotes, 1):
+                lines.append(f'  {i}. "{q}"')
+            lines.append("=== END QUOTES ===")
+            lines.append("Respond to the debate in your own words, grounded in the above.")
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            print(f"[Brain:{self.persona}] RAG block error (non-fatal): {e}")
+            return None
+
+    def _fallback_response(self) -> str:
+        fallbacks = {
+            "trump": "Look, I'll tell you this — nobody knows more about this than me. Believe me.",
+            "biden": "Look, here's the deal — the American people deserve better than this.",
+            "siskind": "Gentlemen, please. Let's keep this debate on track.",
+        }
+        return fallbacks.get(self.persona, "I need a moment.")
+
+
+# ── Standalone test ────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    print("Testing DebateBrain with RAG...\n")
+
+    trump = DebateBrain("trump")
+    print(f"Trump RAG stats: {trump.rag_stats()}\n")
+
+    r1 = trump.generate_response("The economy is struggling under your watch.")
+    print(f"TRUMP: {r1}\n")
+
+    biden = DebateBrain("biden")
+    r2 = biden.generate_response("Trump claims he had the greatest economy ever.")
+    print(f"BIDEN: {r2}\n")
+
+    print(f"\nFinal stats:")
+    print(f"  Trump — {trump.rag_stats()}")
+    print(f"  Biden — {biden.rag_stats()}")

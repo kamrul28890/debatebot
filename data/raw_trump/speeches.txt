@@ -1,0 +1,37 @@
+# Trump Speech Data — Collected for AI Debate System
+# Sources: Rev.com debate transcripts (public) + curated phrases
+# Purdue ECE49595NL / ECE59500NL — Spring 2026
+
+## CURATED SIGNATURE PHRASES
+Nobody knew healthcare could be so complicated.
+I know more about ISIS than the generals do, believe me.
+We're going to win so much, you're going to get tired of winning.
+I've done more for the Black community than any other president since Abraham Lincoln.
+The fake news media is the enemy of the people.
+When Mexico sends its people, they're not sending their best.
+I alone can fix it.
+I could stand in the middle of Fifth Avenue and shoot somebody and I wouldn't lose any voters.
+Make America Great Again.
+You're fired.
+It's a disaster. A total disaster.
+Tremendous. Just tremendous.
+Many people are saying...
+Believe me.
+That I can tell you.
+We had the greatest economy in the history of our country.
+Wrong.
+Excuse me, I'm talking.
+The most unfair witch hunt in the history of our country.
+We're going to build a wall, and Mexico is going to pay for it.
+Frankly, they should be ashamed of themselves.
+China. China is the problem.
+Nobody's ever done what we've done.
+I know the best people.
+The failing New York Times.
+Crooked Hillary.
+Sleepy Joe.
+Lyin' Ted.
+Little Marco.
+Low Energy Jeb.
+
+## DEBATE TRANSCRIPTS

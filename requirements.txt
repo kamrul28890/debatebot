@@ -1,0 +1,34 @@
+# ── Core AI / LLM ─────────────────────────────────────────────────────────────
+openai>=1.30.0
+azure-cognitiveservices-speech>=1.38.0
+
+# ── RAG: Semantic search over speech corpus ────────────────────────────────────
+sentence-transformers>=3.0.0     # all-MiniLM-L6-v2 model (~80MB, CPU-friendly)
+numpy>=1.26.0
+transformers==4.41.2             # XTTS compatibility (5.x breaks BeamSearchScorer import)
+
+# ── GUI ────────────────────────────────────────────────────────────────────────
+PyQt6>=6.7.0
+
+# ── Audio playback & processing ────────────────────────────────────────────────
+sounddevice>=0.4.6
+soundfile>=0.12.1
+pygame>=2.5.2                    # cross-platform audio (Mac, Windows, Linux)
+# Note: winsound is built into Python on Windows — no install needed
+#       afplay is built into macOS — no install needed
+
+# ── XTTS voice cloning ─────────────────────────────────────────────────────────
+TTS>=0.22.0                      # Coqui XTTS v2
+torch>=2.1.0                     # PyTorch runtime
+torchaudio>=2.1.0                # Audio backend used by XTTS
+spacy>=3.8.11                    # required by TTS text pipeline
+encodec>=0.1.1                   # required by TTS audio codec stack
+umap-learn==0.5.7
+
+# ── Web scraping (for data collection, run once) ───────────────────────────────
+requests>=2.31.0
+beautifulsoup4>=4.12.3
+lxml>=5.2.0
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+tqdm>=4.66.4

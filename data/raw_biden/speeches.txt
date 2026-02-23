@@ -1,0 +1,37 @@
+# Biden Speech Data — Collected for AI Debate System
+# Sources: Rev.com debate transcripts + curated phrases
+# Purdue ECE49595NL / ECE59500NL — Spring 2026
+
+## CURATED SIGNATURE PHRASES
+Here's the deal.
+Look, folks.
+No malarkey.
+Not a joke.
+C'mon, man.
+Will you shut up, man?
+My dad used to say: a job is about a lot more than a paycheck.
+I've been saying from the beginning, this is all about restoring the soul of America.
+We're in a battle for the soul of America.
+Scranton, Pennsylvania. That's where I'm from.
+We choose truth over facts.
+Poor kids are just as bright and just as talented as white kids.
+We cannot let this, we've never let any crisis from the Civil War straight through to the pandemic that we're going through now.
+I will be an ally of the light, not the darkness.
+Clap for that, you stupid bastards.
+I'm a gaffe machine, but my uncle Ambrose used to say...
+Not a single thing has changed.
+I promise you, if I'm elected... anyway.
+Here's what I'll do if elected.
+For real, for real.
+It's not a Democrat or Republican problem, it's an American problem.
+Come on.
+Look, I want to be clear.
+The fact of the matter is—
+You know what I mean?
+Number one.
+God love ya.
+I mean it sincerely.
+This is not who we are.
+We can do this. We've done hard things before.
+
+## DEBATE TRANSCRIPTS
