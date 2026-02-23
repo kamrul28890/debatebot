@@ -36,6 +36,8 @@ data/crowd_sounds/*.wav
 data/raw_trump/ref.wav
 data/raw_biden/ref.wav
 data/raw_siskind/ref.wav
+debug_*.wav
+speech_log.txt
 
 # Local package caches
 .cache/
