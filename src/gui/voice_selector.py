@@ -135,6 +135,7 @@ class VoiceModeSelector(QWidget):
         self.setStyleSheet(f"background-color: {COLORS['bg']};")
 
         self._build_ui()
+        self._check_xtts_availability()  # Check availability and set default
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -201,8 +202,6 @@ class VoiceModeSelector(QWidget):
         cards_row.addStretch()
         root.addLayout(cards_row)
 
-        # Default selection
-        self._select_mode("azure")
 
         root.addSpacing(10)
 
@@ -293,6 +292,8 @@ class VoiceModeSelector(QWidget):
             cache_hint = f"{cache_count} cached clips" if cache_count else "no cache yet (live synthesis enabled)"
             self.xtts_note.setText(f"XTTS ready for {self.persona} - {cache_hint}.")
             self.xtts_note.setStyleSheet("color: #00cc66; font-size: 11px;")
+            # Default to XTTS if available
+            self._select_mode("xtts")
 
 
 # ── Standalone test ────────────────────────────────────────────────────────────

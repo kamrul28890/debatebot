@@ -75,7 +75,7 @@ class DebateBrain:
             api_version=keys.azure_openai_api_version,
             azure_endpoint=keys.azure_openai_endpoint,
         )
-        self.deployment = keys.azure_openai_deployment
+        self.deployment = keys.azure_openai_endpoint
 
         # ── Load persona prompt from file ──────────────────────────────────────
         persona_file = os.path.join(
