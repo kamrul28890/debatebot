@@ -1,290 +1,218 @@
-# Debate Night
+﻿# Debate Night (Cross-Platform)
 
 AI presidential debate simulator for Purdue ECE49595NL / ECE59500NL (Spring 2026).
 
-Two personas (Trump or Biden) respond to live input with:
-- GPT-based response generation
-- RAG over local speech corpora
-- Optional fact checking
-- Voice output via Azure TTS or Coqui XTTS voice cloning
-- PyQt6 debate dashboard
+The app runs two personas (Trump/Biden) with:
+- Brain mode: Azure GPT-4 or local Qwen 2.5 0.5B (LoRA fine-tuned)
+- Voice mode: Azure Neural TTS or XTTS voice clone
+- RAG quote retrieval from local speech corpora
+- Fact-check overlay, moderator, and live dashboard
 
-## Current Status
+## 1. Architecture Overview
 
-- Cross-platform run path (Windows/macOS/Linux) is in `src/main.py`.
-- Voice mode is selected at startup (`AZURE` or `XTTS` - XTTS is auto-selected if available).
-- XTTS first run downloads a large model (~1.5 GB) and can take 15-30s per long utterance on CPU.
-- Moderator prompt handoff is supported to avoid deadlock when both listen/speak on one machine.
+### Entry Point
+- `src/main.py`
+  - Starts mode selector, dashboard, and debate worker thread
+  - Passes selected `brain_type` and `voice_mode` into runtime
 
-## Project Layout
+### Brain Layer
+- `src/brain/model.py`
+  - `DebateBrain` abstraction
+  - Backends:
+    - `azure`: Azure OpenAI deployment
+    - `qwen`: local/HF-backed `QwenBrain`
+- `src/brain/qwen_brain.py`
+  - Loads local LoRA adapter when present
+  - Resolves base model from adapter metadata (`base_model_name_or_path`) or fallback
+  - Optional HF fallback via repo env vars
+- `src/brain/rag.py`
+  - Local sentence-transformer retrieval over `data/raw_<persona>/speeches.txt`
 
-```text
-debate_night/
-  src/
-    main.py
-    audio/
-    brain/
-    gui/
-    moderator/
-    utils/
-  data/
-    raw_trump/
-    raw_biden/
-    raw_siskind/
-    crowd_sounds/
-    xtts_cache/          # generated at runtime (ignored by git)
-  scripts/
-  keys_template.py
-  requirements.txt
-  setup.py
-```
+### Audio Layer
+- `src/audio/xtts_speaker.py`
+  - XTTS synthesis and cache playback
+  - Automatic fallback to Azure TTS
+- `src/audio/speaker.py`
+  - Azure Neural TTS with persona-tuned SSML
+- `src/audio/listener.py`
+  - Azure STT listener with mute window for echo suppression
 
-## Prerequisites
+### GUI / Moderator
+- `src/gui/voice_selector.py`
+  - Startup selector for 2 brain cards + 2 voice cards
+- `src/gui/dashboard.py`
+  - Debate dashboard, ticker, fact-check overlay
+- `src/moderator/siskind.py`
+  - Moderator prompts and interjections
 
-- Python 3.10+ (tested with 3.10.5)
-- Working microphone and speaker
-- Azure keys (for OpenAI + Speech paths)
-- Internet access for first XTTS model download
-- At least 8GB RAM (for XTTS model loading)
+### Qwen Tooling
+- `scripts/prepare_dataset.py`
+- `scripts/finetune_qwen.py`
+- `scripts/test_qwen_integration.py`
+- `scripts/upload_to_huggingface.py`
 
-## Quick Start Installation
+## 2. Prerequisites
 
-### 1) Clone the Repository
+- Python 3.10.x
+- Microphone + speakers
+- Azure credentials in `keys.py` for STT/TTS and Azure brain mode
+- Internet for first model downloads (XTTS and Qwen base)
+- Recommended for Qwen fine-tuning on CPU: 48GB RAM
 
-```bash
-git clone <your-github-repo-url>
-cd debatebot
-```
+## 3. Environment Setup
 
-### 2) Create and Activate Virtual Environment
-
-**Windows PowerShell:**
+### Windows PowerShell
 ```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-```
-
-**macOS/Linux:**
-```bash
-python -m venv venv
-source venv/bin/activate
-```
-
-### 3) Install Dependencies
-
-```bash
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-This will install all required packages including PyQt6, TTS, transformers, torch, etc.
-
-### 4) Configure API Keys
-
+### macOS/Linux
 ```bash
-cp keys_template.py keys.py
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-Edit `keys.py` with your Azure OpenAI and Speech credentials:
+### Keys
+```powershell
+copy keys_template.py keys.py
+```
+(or `cp keys_template.py keys.py` on macOS/Linux)
+
+Fill:
 - `azure_openai_key`
 - `azure_openai_endpoint`
+- `azure_openai_api_version`
+- `azure_openai_deployment`
 - `azure_key`
 - `azure_region`
 
-### 5) Verify Setup
+## 4. Running the App
 
-The repository includes:
-- Reference voice files (`data/raw_*/ref.wav`) for XTTS voice cloning
-- Avatar images for the GUI
-- All necessary scripts and configurations
-
-No additional downloads or setup required beyond keys!
-
-## Run the Debate
-
-**Trump instance:**
-```bash
-# macOS/Linux
-PERSONA=trump python src/main.py
-
-# Windows PowerShell
-$env:PERSONA="trump"; python src/main.py
-
-# Or use the provided script
-./run_trump.sh
-```
-
-**Biden instance:**
-```bash
-PERSONA=biden python src/main.py
-# Or
-./run_biden.sh
-```
-
-## Voice Modes
-
-The application automatically selects **XTTS voice cloning** if available (recommended for realistic voices), otherwise falls back to **Azure TTS**.
-
-### XTTS (Voice Cloning)
-- Clones voice from included `ref.wav` files
-- Sounds like the real Trump/Biden/Siskind
-- Uses `data/xtts_cache/` for generated audio (auto-created)
-- First run downloads ~1.5GB model
-- Better quality but slower initial synthesis
-
-### Azure (Fallback)
-- Real-time TTS with prosody tuning
-- Faster startup, always available
-- Generic voice quality
-
-## Keyboard Controls
-
-- `SPACE`: Force opening statement
-- `M`: Moderator interject with new topic
-- `F`: Toggle fact checker on/off
-- `C`: Trigger crowd reaction
-- `R`: Reset conversation history
-- `ESC`: Quit debate
-
-## Troubleshooting
-
-### No Audio Output
-- Check system audio settings
-- Test audio with: `python -c "import pygame; pygame.mixer.init(); pygame.mixer.music.load('data/raw_trump/ref.wav'); pygame.mixer.music.play()"`
-- Ensure microphone permissions
-
-### XTTS Issues
-- If XTTS loads but sounds robotic: Check that `data/raw_<persona>/ref.wav` exists
-- Clear cache: `rm -rf data/xtts_cache/<persona>/`
-- Model download issues: Ensure stable internet connection
-
-### Import Errors
-- Verify Python 3.10+ is used
-- Reinstall dependencies: `pip install -r requirements.txt --force-reinstall`
-
-### GUI Doesn't Start
-- Ensure display server (X11 on Linux, native on macOS/Windows)
-- Check PyQt6 installation
-
-## Advanced Setup
-
-### Pre-generate XTTS Audio Cache
-For zero-latency during debate:
-```bash
-python src/audio/xtts_speaker.py --pregenerate trump --texts "Hello" "I disagree" "That's not true"
-```
-
-### Custom Voice References
-Replace `data/raw_*/ref.wav` with your own 10-30s clean speech samples.
-
-### Crowd Sounds
-Run `python scripts/download_sounds.py` or add `.wav` files to `data/crowd_sounds/`.
-
-## Notes
-
-- `keys.py` is gitignored - never commit API keys
-- Virtual environment (`venv/`) is gitignored
-- Cache folders and generated audio are gitignored
-- Reference voice files are included in the repository
-- Compatible with macOS, Windows, and Linux
-
-### 1) Create and activate virtual environment
-
-Windows PowerShell:
-```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
-```
-
-macOS/Linux:
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 2) Install dependencies
-
-```bash
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-### 3) Configure keys
-
-```bash
-copy keys_template.py keys.py    # Windows
-# or
-cp keys_template.py keys.py      # macOS/Linux
-```
-
-Fill `keys.py` with your Azure/OpenAI credentials.
-
-### 4) Add required media assets
-
-Required voice references:
-- `data/raw_trump/ref.wav` ✅ (included in repo)
-- `data/raw_biden/ref.wav` ✅ (included in repo)
-- `data/raw_siskind/ref.wav` ✅ (included in repo)
-
-Recommended avatar images:
-- `idle.png`, `talking.png`, `listening.png` in each `data/raw_*` folder ✅ (included)
-
-Optional crowd sounds:
-- Run `python scripts/download_sounds.py`
-- Or drop `.wav` files into `data/crowd_sounds/`
-
-## Run
-
-Trump instance:
 ```powershell
 $env:PERSONA="trump"
-python src/main.py
+.\.venv\Scripts\python.exe src/main.py
 ```
 
-Biden instance:
+Second instance:
 ```powershell
 $env:PERSONA="biden"
-python src/main.py
+.\.venv\Scripts\python.exe src/main.py
 ```
 
-Keyboard controls:
-- `SPACE`: force opening statement
-- `M`: moderator interject
-- `F`: toggle fact checker
-- `C`: crowd reaction
-- `R`: reset debate history
-- `ESC`: quit
+At startup, choose one brain card and one voice card.
 
-## Voice Modes
+## 5. Qwen Fine-Tuning (Detailed)
 
-### Azure
-- Lower startup latency
-- Good fallback if XTTS dependencies are missing
+### 5.1 Dataset Files
+Place:
+- `data/trump_train.jsonl`
+- `data/biden_train.jsonl`
 
-### XTTS
-- Cloned timbre from `ref.wav` per persona
-- Uses `data/xtts_cache/` for generated clips
-- Better with clean 10-30s reference speech
+Supported JSONL row formats in current trainer:
+- `{"text": "..."}`
+- `{"messages": [{"role": "user", "content": "..."}, ...]}`
+- `{"instruction": "...", "input": "...", "output": "..."}`
 
-## Troubleshooting
+If your raw data is plain text:
+```powershell
+.\.venv\Scripts\python.exe scripts\prepare_dataset.py --input_file your_trump_data.txt --output_file data\trump_train.jsonl --persona trump
+.\.venv\Scripts\python.exe scripts\prepare_dataset.py --input_file your_biden_data.txt --output_file data\biden_train.jsonl --persona biden
+```
 
-- No audio output:
-  - Confirm system output device is active and not muted.
-  - Test simple audio playback outside app.
-  - Ensure `pygame` is installed and importable.
-- XTTS selected but sounds generic:
-  - Confirm `data/raw_<persona>/ref.wav` exists and is clean.
-  - Delete persona cache in `data/xtts_cache/<persona>/` and rerun.
-  - Ensure `TTS`, `torch`, and `torchaudio` are installed.
-- XTTS appears stuck on first line:
-  - First synthesis on CPU can be slow; wait for model warmup.
-  - Check terminal logs for synthesis progress/fallback messages.
-- Missing crowd sounds warnings:
-  - Add files in `data/crowd_sounds/` or run `scripts/download_sounds.py`.
+### 5.2 Integration Precheck
+```powershell
+$env:PYTHONUTF8="1"
+.\.venv\Scripts\python.exe scripts\test_qwen_integration.py
+```
 
-## Notes
+### 5.3 Train Persona Adapters (Recommended)
+Train separate adapters for stronger persona style:
+```powershell
+.\.venv\Scripts\python.exe scripts\finetune_qwen.py --persona trump
+.\.venv\Scripts\python.exe scripts\finetune_qwen.py --persona biden
+```
 
-- `keys.py` is intentionally ignored by git.
-- `venv/`, cache folders, and generated audio are ignored by git.
-- If you run both candidates on one machine, microphone/speaker bleed can still affect turn-taking.
+Outputs:
+- `data/models/qwen-2.5-0.5b-finetuned-trump/`
+- `data/models/qwen-2.5-0.5b-finetuned-biden/`
 
+### 5.4 Validate Adapter Inference
+```powershell
+$env:PYTHONUTF8="1"
+.\.venv\Scripts\python.exe -c "from src.brain.qwen_brain import QwenBrain; b=QwenBrain('trump'); print(b.generate_response('Why are your policies better?')[:300])"
+.\.venv\Scripts\python.exe -c "from src.brain.qwen_brain import QwenBrain; b=QwenBrain('biden'); print(b.generate_response('Why are your policies better?')[:300])"
+```
+
+### 5.5 Connect Qwen to Runtime
+No extra code changes needed if those local folders exist. Selector will detect them.
+
+Optional env overrides:
+- `QWEN_BASE_MODEL` (path or HF repo for base)
+- `HF_MODEL_REPO_TRUMP`
+- `HF_MODEL_REPO_BIDEN`
+- `HF_MODEL_REPO` (shared fallback)
+
+## 6. Upload Fine-Tuned Models to Hugging Face
+
+```powershell
+.\.venv\Scripts\python.exe scripts\upload_to_huggingface.py --model_path data\models\qwen-2.5-0.5b-finetuned-trump --repo_name <username>/qwen-debate-trump
+.\.venv\Scripts\python.exe scripts\upload_to_huggingface.py --model_path data\models\qwen-2.5-0.5b-finetuned-biden --repo_name <username>/qwen-debate-biden
+```
+
+For runtime HF fallback, set:
+```powershell
+$env:HF_MODEL_REPO_TRUMP="<username>/qwen-debate-trump"
+$env:HF_MODEL_REPO_BIDEN="<username>/qwen-debate-biden"
+```
+
+## 7. Troubleshooting
+
+### Error: missing `config.json` in `data/models/qwen-2.5-0.5b-base`
+Cause: base model cache directory is not a direct HF model folder root.
+
+Fix: use current `qwen_brain.py` logic (already handled) and run with `.venv` interpreter.
+
+### Wrong Python environment / weird `transformers`-`numpy` errors
+Use explicit interpreter:
+```powershell
+.\.venv\Scripts\python.exe <command>
+```
+
+### Qwen import fails (`peft`/`datasets`/`accelerate` missing)
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+### XTTS unavailable
+Fallback to Azure TTS is automatic. Install missing deps if needed:
+```powershell
+.\.venv\Scripts\python.exe -m pip install TTS torch torchaudio
+```
+
+## 8. Git/Artifact Policy in This Repo
+
+Ignored by git:
+- `keys.py`
+- logs/caches (`logs/`, `.rag_cache/`, `data/xtts_cache/`)
+- local Qwen base cache (`data/models/qwen-2.5-0.5b-base/**`)
+
+Tracked (as requested):
+- fine-tuned adapter outputs and checkpoints under:
+  - `data/models/qwen-2.5-0.5b-finetuned-trump/**`
+  - `data/models/qwen-2.5-0.5b-finetuned-biden/**`
+
+## 9. Useful Commands
+
+```powershell
+# Compile sanity check
+.\.venv\Scripts\python.exe -m compileall -q src scripts
+
+# Run Qwen integration test
+$env:PYTHONUTF8="1"
+.\.venv\Scripts\python.exe scripts\test_qwen_integration.py
+```

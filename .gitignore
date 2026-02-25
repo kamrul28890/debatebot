@@ -30,6 +30,12 @@ logs/
 *.log
 .rag_cache/
 data/xtts_cache/
+data/models/qwen-2.5-0.5b-base/
+data/models/qwen-2.5-0.5b-base/**
+data/models/.cache/
+data/models/**/.locks/
+data/models/**/runs/
+data/models/**/events.out.tfevents*
 
 # Local/downloaded media not required in git history
 data/crowd_sounds/*.wav

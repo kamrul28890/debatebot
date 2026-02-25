@@ -54,6 +54,10 @@ class DebateBrain:
     """
     Core AI brain for a debate persona.
 
+    Supports multiple LLM backends:
+    - "azure": Azure OpenAI (GPT-4) - default
+    - "qwen": Local/HF Qwen 2.5 0.5B model
+
     RAG behavior:
     - Retrieves 3-4 real quotes semantically similar to opponent's statement
     - Injects them as a block: "Here's how you have spoken about this before:"
@@ -61,21 +65,22 @@ class DebateBrain:
     - RAG enrichment is purely additive — never replaces or degrades the response
     """
 
-    def __init__(self, persona: str):
+    def __init__(self, persona: str, brain_type: str = "azure"):
         assert persona in ("trump", "biden", "siskind"), f"Unknown persona: {persona}"
+        assert brain_type in ("azure", "qwen"), f"Unknown brain type: {brain_type}"
+
         self.persona = persona
+        self.brain_type = brain_type
         self.topic_index = 0
         self.turn_count = 0
         self.rag_hits = 0
         self.rag_misses = 0
 
-        # ── Azure OpenAI client ────────────────────────────────────────────────
-        self.client = openai.AzureOpenAI(
-            api_key=keys.azure_openai_key,
-            api_version=keys.azure_openai_api_version,
-            azure_endpoint=keys.azure_openai_endpoint,
-        )
-        self.deployment = keys.azure_openai_endpoint
+        # ── Initialize LLM backend ─────────────────────────────────────────────
+        if brain_type == "azure":
+            self._init_azure_client()
+        elif brain_type == "qwen":
+            self._init_qwen_client()
 
         # ── Load persona prompt from file ──────────────────────────────────────
         persona_file = os.path.join(
@@ -105,6 +110,20 @@ class DebateBrain:
         # ── Conversation history ───────────────────────────────────────────────
         self.history = []
 
+    def _init_azure_client(self):
+        """Initialize Azure OpenAI client."""
+        self.client = openai.AzureOpenAI(
+            api_key=keys.azure_openai_key,
+            api_version=keys.azure_openai_api_version,
+            azure_endpoint=keys.azure_openai_endpoint,
+        )
+        self.deployment = keys.azure_openai_deployment
+
+    def _init_qwen_client(self):
+        """Initialize Qwen client."""
+        from src.brain.qwen_brain import QwenBrain
+        self.qwen_brain = QwenBrain(self.persona)
+
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def generate_response(self, opponent_text: str) -> str:
@@ -114,6 +133,15 @@ class DebateBrain:
         """
         self.turn_count += 1
 
+        if self.brain_type == "azure":
+            return self._generate_azure_response(opponent_text)
+        elif self.brain_type == "qwen":
+            return self._generate_qwen_response(opponent_text)
+        else:
+            raise ValueError(f"Unknown brain type: {self.brain_type}")
+
+    def _generate_azure_response(self, opponent_text: str) -> str:
+        """Generate response using Azure OpenAI."""
         system_prompt = self._build_system_prompt(opponent_text)
         self.history.append({"role": "user", "content": opponent_text})
 
@@ -134,10 +162,50 @@ class DebateBrain:
             )
             reply = response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[Brain:{self.persona}] API error: {e}")
+            print(f"[Brain:{self.persona}] Azure API error: {e}")
             reply = self._fallback_response()
 
         self.history.append({"role": "assistant", "content": reply})
+        return reply
+
+    def _generate_qwen_response(self, opponent_text: str) -> str:
+        """Generate response using Qwen model."""
+        # Build context with RAG
+        context = self._get_rag_block(opponent_text)
+        if context:
+            self.rag_hits += 1
+        else:
+            self.rag_misses += 1
+
+        # Build conversation history for Qwen
+        history_text = ""
+        if self.history:
+            # Convert last few turns to text format
+            recent_turns = self.history[-6:]  # Last 3 exchanges (6 messages)
+            for i in range(0, len(recent_turns), 2):
+                if i+1 < len(recent_turns):
+                    user_msg = recent_turns[i].get("content", "")
+                    assistant_msg = recent_turns[i+1].get("content", "")
+                    history_text += f"Opponent: {user_msg}\nYou: {assistant_msg}\n\n"
+
+        # Include conversation history in model context.
+        context_parts = []
+        if context:
+            context_parts.append(context)
+        if history_text:
+            context_parts.append(f"Recent debate history:\n{history_text.strip()}")
+        qwen_context = "\n\n".join(context_parts) if context_parts else None
+
+        try:
+            reply = self.qwen_brain.generate_response(opponent_text, qwen_context)
+        except Exception as e:
+            print(f"[Brain:{self.persona}] Qwen generation error: {e}")
+            reply = self._fallback_response()
+
+        # Update history
+        self.history.append({"role": "user", "content": opponent_text})
+        self.history.append({"role": "assistant", "content": reply})
+
         return reply
 
     def generate_interjection(self) -> str:

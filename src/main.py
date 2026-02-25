@@ -50,7 +50,7 @@ from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QKeyEvent
 
 from src.gui.dashboard import DebateDashboard
-from src.gui.voice_selector import VoiceModeSelector
+from src.gui.voice_selector import DebateModeSelector
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -70,10 +70,11 @@ class DebateWorker(QThread):
     sig_fact_check      = pyqtSignal(str, str, str)  # (verdict, claim, real_stat)
     sig_ticker          = pyqtSignal(str)             # (message,)
 
-    def __init__(self, persona: str, voice_mode: str):
+    def __init__(self, persona: str, voice_mode: str, brain_type: str = "azure"):
         super().__init__()
         self.persona = persona
         self.voice_mode = voice_mode
+        self.brain_type = brain_type
         self._running = True
         self._force_speak = False
         self._moderator_interject = False
@@ -81,10 +82,11 @@ class DebateWorker(QThread):
 
         print(f"\n🚀 Initializing Debate Night")
         print(f"   Persona     : {persona.upper()}")
+        print(f"   Brain type  : {brain_type.upper()}")
         print(f"   Voice mode  : {voice_mode.upper()}")
 
         # ── AI Brain (with RAG) ────────────────────────────────────────────────
-        self.brain = DebateBrain(persona)
+        self.brain = DebateBrain(persona, brain_type=brain_type)
 
         # ── Voice — DualSpeaker handles XTTS + Azure fallback ─────────────────
         self.speaker = DualSpeaker(persona, mode=voice_mode)
@@ -99,7 +101,7 @@ class DebateWorker(QThread):
         self.checker = FactChecker()
 
         print(f"✅ All systems ready.\n")
-        self.sig_ticker.emit(f"SYSTEM READY | Voice: {voice_mode.upper()} | RAG: {'ON' if self.brain.rag_stats()['ready'] else 'OFF'}")
+        self.sig_ticker.emit(f"SYSTEM READY | Brain: {brain_type.upper()} | Voice: {voice_mode.upper()} | RAG: {'ON' if self.brain.rag_stats()['ready'] else 'OFF'}")
 
     # ── Main Loop ──────────────────────────────────────────────────────────────
 
@@ -209,21 +211,21 @@ class DebateApp:
         self.worker = None
         self.gui = None
 
-        # ── Step 1: Show voice mode selector ──────────────────────────────────
-        self.selector = VoiceModeSelector(persona)
+        # ── Step 1: Show mode selector ──────────────────────────────────
+        self.selector = DebateModeSelector(persona)
         self.selector.mode_selected.connect(self._on_mode_selected)
         self.selector.show()
 
-    def _on_mode_selected(self, mode: str):
-        """Called when user picks XTTS or Azure on the startup screen."""
-        print(f"\n🎬 Voice mode selected: {mode.upper()}")
+    def _on_mode_selected(self, brain_mode: str, voice_mode: str):
+        """Called when user picks brain and voice modes on the startup screen."""
+        print(f"\n🎬 Modes selected: Brain={brain_mode.upper()}, Voice={voice_mode.upper()}")
 
         # ── Step 2: Launch main debate GUI ────────────────────────────────────
         self.gui = DebateDashboard(my_persona=self.persona)
         self.gui.show()
 
         # ── Step 3: Start worker thread ────────────────────────────────────────
-        self.worker = DebateWorker(self.persona, mode)
+        self.worker = DebateWorker(self.persona, voice_mode, brain_type=brain_mode)
 
         self.worker.sig_start_speaking.connect(self.gui.start_speaking)
         self.worker.sig_stop_speaking.connect(self.gui.stop_speaking)
