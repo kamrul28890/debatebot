@@ -17,8 +17,8 @@ from typing import List, Optional
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import openai
-import keys
 from src.brain.rag import RAGRetriever
+from src.config import settings
 
 # ── Debate topics ──────────────────────────────────────────────────────────────
 DEBATE_TOPICS = [
@@ -66,8 +66,10 @@ class DebateBrain:
     """
 
     def __init__(self, persona: str, brain_type: str = "azure"):
-        assert persona in ("trump", "biden", "siskind"), f"Unknown persona: {persona}"
-        assert brain_type in ("azure", "qwen"), f"Unknown brain type: {brain_type}"
+        if persona not in ("trump", "biden", "siskind"):
+            raise ValueError(f"Unknown persona: {persona}")
+        if brain_type not in ("azure", "qwen"):
+            raise ValueError(f"Unknown brain type: {brain_type}")
 
         self.persona = persona
         self.brain_type = brain_type
@@ -112,12 +114,13 @@ class DebateBrain:
 
     def _init_azure_client(self):
         """Initialize Azure OpenAI client."""
+        settings.require_openai()
         self.client = openai.AzureOpenAI(
-            api_key=keys.azure_openai_key,
-            api_version=keys.azure_openai_api_version,
-            azure_endpoint=keys.azure_openai_endpoint,
+            api_key=settings.azure_openai_key,
+            api_version=settings.azure_openai_api_version,
+            azure_endpoint=settings.azure_openai_endpoint,
         )
-        self.deployment = keys.azure_openai_deployment
+        self.deployment = settings.azure_openai_deployment
 
     def _init_qwen_client(self):
         """Initialize Qwen client."""

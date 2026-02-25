@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "debate-night"
+version = "0.1.0"
+description = "AI presidential debate simulator with Azure and local Qwen backends."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+  "openai>=1.54,<3",
+  "azure-cognitiveservices-speech>=1.42,<2",
+  "PyQt6>=6.6,<7",
+  "requests>=2.32,<3",
+  "beautifulsoup4>=4.12,<5",
+  "pygame>=2.5,<3",
+  "python-dotenv>=1.0,<2",
+]
+
+[project.optional-dependencies]
+rag = [
+  "sentence-transformers>=2.7,<4",
+]
+qwen = [
+  "torch>=2.2",
+  "transformers>=4.39,<5",
+  "peft>=0.10,<1",
+  "accelerate>=0.28,<2",
+  "datasets>=2.18,<4",
+  "safetensors>=0.4,<1",
+  "huggingface_hub>=0.23,<1",
+]
+xtts = [
+  "TTS==0.22.0",
+  "torch>=2.2",
+  "torchaudio>=2.2",
+  "numpy==1.22.0; python_version <= '3.10'",
+  "numpy>=1.24,<3; python_version > '3.10'",
+  "librosa>=0.10,<1",
+  "soundfile>=0.12,<1",
+]
+dev = [
+  "pytest>=8,<9",
+  "ruff>=0.6,<1",
+]
+full = [
+  "sentence-transformers>=2.7,<4",
+  "torch>=2.2",
+  "transformers>=4.39,<5",
+  "peft>=0.10,<1",
+  "accelerate>=0.28,<2",
+  "datasets>=2.18,<4",
+  "safetensors>=0.4,<1",
+  "huggingface_hub>=0.23,<1",
+  "TTS==0.22.0",
+  "torchaudio>=2.2",
+  "numpy==1.22.0; python_version <= '3.10'",
+  "numpy>=1.24,<3; python_version > '3.10'",
+  "librosa>=0.10,<1",
+  "soundfile>=0.12,<1",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["src*"]

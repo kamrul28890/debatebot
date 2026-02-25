@@ -1,80 +1,78 @@
 # Installation Guide
 
-This guide is for a clean setup of `debate_night`.
+This guide is for a clean setup on Windows, macOS, or Linux.
 
-## 1. Python and venv
+## 1. Python Version
 
-Use Python 3.10.
+Use Python 3.10.x.
+
+## 2. Create and activate virtual environment
 
 Windows PowerShell:
 ```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 ```
 
 macOS/Linux:
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-## 2. Install packages
+## 3. Install dependencies
 
+Core app:
 ```bash
 python -m pip install -r requirements.txt
 ```
 
-Core packages expected:
-- `PyQt6`
-- `openai`
-- `azure-cognitiveservices-speech`
-- `sentence-transformers`
-- `TTS`
-- `torch`
-- `torchaudio`
-- `pygame`
-- `sounddevice`
-- `soundfile`
-
-## 3. Configure credentials
-
+Optional feature packs:
 ```bash
-copy keys_template.py keys.py    # Windows
-# or
-cp keys_template.py keys.py      # macOS/Linux
+python -m pip install -r requirements-rag.txt
+python -m pip install -r requirements-qwen.txt
+python -m pip install -r requirements-xtts.txt
 ```
 
-Set valid keys in `keys.py`.
+## 4. Configure credentials
 
-## 4. Add required voice references
+Option A (preferred): environment variables
+- `AZURE_OPENAI_KEY`
+- `AZURE_OPENAI_ENDPOINT`
+- `AZURE_OPENAI_API_VERSION`
+- `AZURE_OPENAI_DEPLOYMENT`
+- `AZURE_SPEECH_KEY`
+- `AZURE_SPEECH_REGION`
 
-Add these files:
+Option B: local file
+```bash
+copy keys_template.py keys.py   # Windows
+cp keys_template.py keys.py     # macOS/Linux
+```
+
+Then fill the values in `keys.py`.
+
+## 5. Add required local assets
+
+Reference voice files:
 - `data/raw_trump/ref.wav`
 - `data/raw_biden/ref.wav`
 - `data/raw_siskind/ref.wav`
 
-Use clean speech, 10-30 seconds, minimal noise/music.
-
-## 5. Optional assets
-
-- Crowd sounds: `python scripts/download_sounds.py`
-- Speech corpus refresh:
-  - `python src/utils/scraper_trump.py`
-  - `python src/utils/scraper_biden.py`
-
-## 6. Validate install
+## 6. Run diagnostics
 
 ```bash
-python -m compileall -q src
-python -c "from src.audio.xtts_speaker import XTTS_AVAILABLE; print('XTTS_AVAILABLE=', XTTS_AVAILABLE)"
+python scripts/doctor.py
 ```
 
-If XTTS is unavailable, verify:
-- `python -m pip show TTS torch torchaudio`
+Full local stack:
+```bash
+python scripts/doctor.py --rag --qwen --xtts
+```
 
-## 7. Run app
+## 7. Run the app
 
 Windows PowerShell:
 ```powershell
@@ -82,15 +80,34 @@ $env:PERSONA="trump"
 python src/main.py
 ```
 
-Switch persona:
-```powershell
-$env:PERSONA="biden"
-python src/main.py
+macOS/Linux:
+```bash
+PERSONA=trump python src/main.py
 ```
 
-## Audio Notes
+Run another terminal with `PERSONA=biden`.
 
-- First XTTS run downloads model files and may take time.
-- CPU synthesis can be slow for long lines.
-- If there is no output sound, verify system output device and volume.
+## 8. Qwen setup (optional)
+
+1. Place:
+   - `data/trump_train.jsonl`
+   - `data/biden_train.jsonl`
+2. Validate:
+   - `python scripts/test_qwen_integration.py`
+3. Train:
+   - `python scripts/finetune_qwen.py --persona trump`
+   - `python scripts/finetune_qwen.py --persona biden`
+4. Optional upload:
+   - `python scripts/upload_to_huggingface.py --model_path ... --repo_name ...`
+
+## 9. Common issues
+
+- Dependency conflicts:
+  - Use split requirement files in this repository; avoid old frozen lockfiles.
+- Wrong interpreter:
+  - Always run commands with the `.venv` Python.
+- XTTS missing:
+  - Install `requirements-xtts.txt` and rerun doctor.
+- Qwen missing:
+  - Install `requirements-qwen.txt` and ensure local adapters or HF token.
 

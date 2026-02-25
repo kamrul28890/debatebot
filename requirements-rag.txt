@@ -1,0 +1,2 @@
+# Optional: semantic retrieval (RAG)
+sentence-transformers>=2.7,<4

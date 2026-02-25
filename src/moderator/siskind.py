@@ -17,7 +17,7 @@ import threading
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import openai
-import keys
+from src.config import settings
 
 SISKIND_PROMPT = """You are Professor Jeffrey Mark Siskind, a computer science professor at Purdue University 
 who has been roped into moderating this chaotic AI presidential debate between Donald Trump and Joe Biden.
@@ -87,12 +87,13 @@ class SiskindModerator:
         """
         tts_callback: function(text) that speaks the given text
         """
+        settings.require_openai()
         self.client = openai.AzureOpenAI(
-            api_key=keys.azure_openai_key,
-            api_version=keys.azure_openai_api_version,
-            azure_endpoint=keys.azure_openai_endpoint,
+            api_key=settings.azure_openai_key,
+            api_version=settings.azure_openai_api_version,
+            azure_endpoint=settings.azure_openai_endpoint,
         )
-        self.deployment = keys.azure_openai_deployment
+        self.deployment = settings.azure_openai_deployment
         self.tts_callback = tts_callback
         self.topic_index = 0
         self.timer_thread = None

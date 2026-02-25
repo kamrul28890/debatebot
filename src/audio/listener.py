@@ -15,7 +15,7 @@ import threading
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import azure.cognitiveservices.speech as speechsdk
-import keys
+from src.config import settings
 
 
 class DebateListener:
@@ -29,9 +29,10 @@ class DebateListener:
     """
 
     def __init__(self, silence_timeout_ms: int = 1500, initial_silence_timeout_ms: int = 15000):
+        settings.require_speech()
         speech_config = speechsdk.SpeechConfig(
-            subscription=keys.azure_key,
-            region=keys.azure_region,
+            subscription=settings.azure_speech_key,
+            region=settings.azure_speech_region,
         )
 
         # ── Silence detection tuning ───────────────────────────────────────────

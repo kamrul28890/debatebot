@@ -15,7 +15,7 @@ import re
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import azure.cognitiveservices.speech as speechsdk
-import keys
+from src.config import settings
 
 
 # ── Voice assignments ──────────────────────────────────────────────────────────
@@ -74,12 +74,14 @@ class DebateSpeaker:
     """
 
     def __init__(self, persona: str):
-        assert persona in VOICE_MAP, f"Unknown persona: {persona}"
+        if persona not in VOICE_MAP:
+            raise ValueError(f"Unknown persona: {persona}")
         self.persona = persona
 
+        settings.require_speech()
         speech_config = speechsdk.SpeechConfig(
-            subscription=keys.azure_key,
-            region=keys.azure_region,
+            subscription=settings.azure_speech_key,
+            region=settings.azure_speech_region,
         )
         speech_config.speech_synthesis_voice_name = VOICE_MAP[persona]
 

@@ -46,10 +46,11 @@ class QwenBrain:
         self.base_dir = Path(__file__).parent.parent.parent
         self.models_dir = self.base_dir / "data" / "models"
 
-        # Default model repos (update these after uploading to HF Hub)
+        # Optional persona-specific fallback repos. Kept empty by default so
+        # runtime behavior is explicit unless user configures HF env vars.
         self.default_repos = {
-            "trump": "your-username/qwen-debate-trump",  # TODO: Update with actual repo
-            "biden": "your-username/qwen-debate-biden",  # TODO: Update with actual repo
+            "trump": None,
+            "biden": None,
         }
 
         env_repo = (

@@ -1,218 +1,178 @@
-﻿# Debate Night (Cross-Platform)
+# Debate Night (Cross-Platform)
 
-AI presidential debate simulator for Purdue ECE49595NL / ECE59500NL (Spring 2026).
+AI presidential debate simulator with selectable brain and voice backends:
+- Brain: Azure OpenAI GPT or local Qwen 2.5 0.5B LoRA
+- Voice: Azure Neural TTS or local XTTS voice cloning
+- Extras: RAG quote retrieval, fact-check overlay, moderator, live dashboard
 
-The app runs two personas (Trump/Biden) with:
-- Brain mode: Azure GPT-4 or local Qwen 2.5 0.5B (LoRA fine-tuned)
-- Voice mode: Azure Neural TTS or XTTS voice clone
-- RAG quote retrieval from local speech corpora
-- Fact-check overlay, moderator, and live dashboard
+## Architecture
 
-## 1. Architecture Overview
+- Entry point: `src/main.py`
+- Brain abstraction: `src/brain/model.py`
+- Local Qwen runtime: `src/brain/qwen_brain.py`
+- RAG retrieval: `src/brain/rag.py`
+- Voice backends: `src/audio/speaker.py`, `src/audio/xtts_speaker.py`
+- GUI mode selector: `src/gui/voice_selector.py`
+- Qwen tooling:
+  - `scripts/prepare_dataset.py`
+  - `scripts/finetune_qwen.py`
+  - `scripts/test_qwen_integration.py`
+  - `scripts/upload_to_huggingface.py`
+  - `scripts/doctor.py`
 
-### Entry Point
-- `src/main.py`
-  - Starts mode selector, dashboard, and debate worker thread
-  - Passes selected `brain_type` and `voice_mode` into runtime
+## Installation
 
-### Brain Layer
-- `src/brain/model.py`
-  - `DebateBrain` abstraction
-  - Backends:
-    - `azure`: Azure OpenAI deployment
-    - `qwen`: local/HF-backed `QwenBrain`
-- `src/brain/qwen_brain.py`
-  - Loads local LoRA adapter when present
-  - Resolves base model from adapter metadata (`base_model_name_or_path`) or fallback
-  - Optional HF fallback via repo env vars
-- `src/brain/rag.py`
-  - Local sentence-transformer retrieval over `data/raw_<persona>/speeches.txt`
+### 1. Create a virtual environment
 
-### Audio Layer
-- `src/audio/xtts_speaker.py`
-  - XTTS synthesis and cache playback
-  - Automatic fallback to Azure TTS
-- `src/audio/speaker.py`
-  - Azure Neural TTS with persona-tuned SSML
-- `src/audio/listener.py`
-  - Azure STT listener with mute window for echo suppression
-
-### GUI / Moderator
-- `src/gui/voice_selector.py`
-  - Startup selector for 2 brain cards + 2 voice cards
-- `src/gui/dashboard.py`
-  - Debate dashboard, ticker, fact-check overlay
-- `src/moderator/siskind.py`
-  - Moderator prompts and interjections
-
-### Qwen Tooling
-- `scripts/prepare_dataset.py`
-- `scripts/finetune_qwen.py`
-- `scripts/test_qwen_integration.py`
-- `scripts/upload_to_huggingface.py`
-
-## 2. Prerequisites
-
-- Python 3.10.x
-- Microphone + speakers
-- Azure credentials in `keys.py` for STT/TTS and Azure brain mode
-- Internet for first model downloads (XTTS and Qwen base)
-- Recommended for Qwen fine-tuning on CPU: 48GB RAM
-
-## 3. Environment Setup
-
-### Windows PowerShell
+Windows PowerShell:
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
 ```
 
-### macOS/Linux
+macOS/Linux:
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
+```
+
+### 2. Install dependencies
+
+Core app:
+```bash
 python -m pip install -r requirements.txt
 ```
 
-### Keys
-```powershell
-copy keys_template.py keys.py
+Optional stacks:
+```bash
+python -m pip install -r requirements-rag.txt     # RAG retrieval
+python -m pip install -r requirements-qwen.txt    # Qwen local inference + fine-tuning
+python -m pip install -r requirements-xtts.txt    # XTTS voice cloning
 ```
-(or `cp keys_template.py keys.py` on macOS/Linux)
 
-Fill:
-- `azure_openai_key`
-- `azure_openai_endpoint`
-- `azure_openai_api_version`
-- `azure_openai_deployment`
-- `azure_key`
-- `azure_region`
+Alternative (editable install with extras):
+```bash
+python -m pip install -e .
+python -m pip install -e ".[rag,qwen,xtts]"
+```
 
-## 4. Running the App
+### 3. Run environment diagnostics
+```bash
+python scripts/doctor.py
+```
 
+For full local stack validation:
+```bash
+python scripts/doctor.py --rag --qwen --xtts
+```
+
+## Credentials
+
+Preferred: environment variables
+- `AZURE_OPENAI_KEY`
+- `AZURE_OPENAI_ENDPOINT`
+- `AZURE_OPENAI_API_VERSION`
+- `AZURE_OPENAI_DEPLOYMENT`
+- `AZURE_SPEECH_KEY`
+- `AZURE_SPEECH_REGION`
+
+Fallback:
+```bash
+cp keys_template.py keys.py
+```
+Then fill `keys.py`.
+
+## Run the app
+
+Windows PowerShell:
 ```powershell
 $env:PERSONA="trump"
-.\.venv\Scripts\python.exe src/main.py
+python src/main.py
 ```
 
-Second instance:
-```powershell
-$env:PERSONA="biden"
-.\.venv\Scripts\python.exe src/main.py
+macOS/Linux:
+```bash
+PERSONA=trump python src/main.py
 ```
 
-At startup, choose one brain card and one voice card.
+Start a second instance with `PERSONA=biden`.
 
-## 5. Qwen Fine-Tuning (Detailed)
+At startup, choose:
+- Brain: `azure` or `qwen`
+- Voice: `azure` or `xtts`
 
-### 5.1 Dataset Files
-Place:
+## Qwen Fine-Tuning Workflow
+
+### 1. Prepare dataset files
+Place these files:
 - `data/trump_train.jsonl`
 - `data/biden_train.jsonl`
 
-Supported JSONL row formats in current trainer:
+Supported row formats:
 - `{"text": "..."}`
-- `{"messages": [{"role": "user", "content": "..."}, ...]}`
-- `{"instruction": "...", "input": "...", "output": "..."}`
+- `{"messages": [{"role":"user","content":"..."}, ...]}`
+- `{"instruction":"...","input":"...","output":"..."}`
 
-If your raw data is plain text:
-```powershell
-.\.venv\Scripts\python.exe scripts\prepare_dataset.py --input_file your_trump_data.txt --output_file data\trump_train.jsonl --persona trump
-.\.venv\Scripts\python.exe scripts\prepare_dataset.py --input_file your_biden_data.txt --output_file data\biden_train.jsonl --persona biden
+### 2. Validate integration
+```bash
+python scripts/test_qwen_integration.py
 ```
 
-### 5.2 Integration Precheck
-```powershell
-$env:PYTHONUTF8="1"
-.\.venv\Scripts\python.exe scripts\test_qwen_integration.py
+### 3. Train persona adapters
+Recommended: train separate adapters for each persona.
+```bash
+python scripts/finetune_qwen.py --persona trump
+python scripts/finetune_qwen.py --persona biden
 ```
 
-### 5.3 Train Persona Adapters (Recommended)
-Train separate adapters for stronger persona style:
-```powershell
-.\.venv\Scripts\python.exe scripts\finetune_qwen.py --persona trump
-.\.venv\Scripts\python.exe scripts\finetune_qwen.py --persona biden
-```
-
-Outputs:
+Output directories:
 - `data/models/qwen-2.5-0.5b-finetuned-trump/`
 - `data/models/qwen-2.5-0.5b-finetuned-biden/`
 
-### 5.4 Validate Adapter Inference
-```powershell
-$env:PYTHONUTF8="1"
-.\.venv\Scripts\python.exe -c "from src.brain.qwen_brain import QwenBrain; b=QwenBrain('trump'); print(b.generate_response('Why are your policies better?')[:300])"
-.\.venv\Scripts\python.exe -c "from src.brain.qwen_brain import QwenBrain; b=QwenBrain('biden'); print(b.generate_response('Why are your policies better?')[:300])"
+### 4. Quick inference check
+```bash
+python -c "from src.brain.qwen_brain import QwenBrain; b=QwenBrain('trump'); print(b.generate_response('Why are your policies better?')[:300])"
+python -c "from src.brain.qwen_brain import QwenBrain; b=QwenBrain('biden'); print(b.generate_response('Why are your policies better?')[:300])"
 ```
 
-### 5.5 Connect Qwen to Runtime
-No extra code changes needed if those local folders exist. Selector will detect them.
+### 5. Optional: upload adapters to Hugging Face
+```bash
+python scripts/upload_to_huggingface.py --model_path data/models/qwen-2.5-0.5b-finetuned-trump --repo_name <username>/ai-debate-trump-biden-trump
+python scripts/upload_to_huggingface.py --model_path data/models/qwen-2.5-0.5b-finetuned-biden --repo_name <username>/ai-debate-trump-biden-biden
+```
 
-Optional env overrides:
-- `QWEN_BASE_MODEL` (path or HF repo for base)
+Runtime fallback env vars:
 - `HF_MODEL_REPO_TRUMP`
 - `HF_MODEL_REPO_BIDEN`
-- `HF_MODEL_REPO` (shared fallback)
+- `HF_MODEL_REPO`
+- `QWEN_BASE_MODEL` (optional override)
 
-## 6. Upload Fine-Tuned Models to Hugging Face
+## macOS Notes
 
-```powershell
-.\.venv\Scripts\python.exe scripts\upload_to_huggingface.py --model_path data\models\qwen-2.5-0.5b-finetuned-trump --repo_name <username>/qwen-debate-trump
-.\.venv\Scripts\python.exe scripts\upload_to_huggingface.py --model_path data\models\qwen-2.5-0.5b-finetuned-biden --repo_name <username>/qwen-debate-biden
+- Use Python 3.10 (recommended for compatibility with all optional stacks).
+- For XTTS on Apple Silicon, install PyTorch/torchaudio in the same venv before XTTS if needed.
+- First XTTS run downloads large model files; this is expected.
+
+## Troubleshooting
+
+- Install conflict on non-macOS from `pyobjc`: fixed by split dependency files in this repo. Do not use old frozen lockfiles.
+- `config.json` missing under local base model path:
+  - `qwen_brain.py` resolves base model from adapter metadata and HF fallback.
+- Wrong environment:
+  - Use explicit interpreter: `.\.venv\Scripts\python.exe` (Windows) or `.venv/bin/python` (macOS/Linux).
+- Quick health check:
+  - `python -m compileall -q src scripts`
+  - `python scripts/doctor.py --rag --qwen --xtts`
+
+## Development
+
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q tests
+python -m compileall -q src scripts tests
 ```
 
-For runtime HF fallback, set:
-```powershell
-$env:HF_MODEL_REPO_TRUMP="<username>/qwen-debate-trump"
-$env:HF_MODEL_REPO_BIDEN="<username>/qwen-debate-biden"
-```
+CI is configured in `.github/workflows/ci.yml` to run compile + smoke tests on Windows/macOS/Linux.
 
-## 7. Troubleshooting
-
-### Error: missing `config.json` in `data/models/qwen-2.5-0.5b-base`
-Cause: base model cache directory is not a direct HF model folder root.
-
-Fix: use current `qwen_brain.py` logic (already handled) and run with `.venv` interpreter.
-
-### Wrong Python environment / weird `transformers`-`numpy` errors
-Use explicit interpreter:
-```powershell
-.\.venv\Scripts\python.exe <command>
-```
-
-### Qwen import fails (`peft`/`datasets`/`accelerate` missing)
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-### XTTS unavailable
-Fallback to Azure TTS is automatic. Install missing deps if needed:
-```powershell
-.\.venv\Scripts\python.exe -m pip install TTS torch torchaudio
-```
-
-## 8. Git/Artifact Policy in This Repo
-
-Ignored by git:
-- `keys.py`
-- logs/caches (`logs/`, `.rag_cache/`, `data/xtts_cache/`)
-- local Qwen base cache (`data/models/qwen-2.5-0.5b-base/**`)
-
-Tracked (as requested):
-- fine-tuned adapter outputs and checkpoints under:
-  - `data/models/qwen-2.5-0.5b-finetuned-trump/**`
-  - `data/models/qwen-2.5-0.5b-finetuned-biden/**`
-
-## 9. Useful Commands
-
-```powershell
-# Compile sanity check
-.\.venv\Scripts\python.exe -m compileall -q src scripts
-
-# Run Qwen integration test
-$env:PYTHONUTF8="1"
-.\.venv\Scripts\python.exe scripts\test_qwen_integration.py
-```

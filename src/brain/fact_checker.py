@@ -15,7 +15,7 @@ from typing import Callable, Optional
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import openai
-import keys
+from src.config import settings
 
 
 FACT_CHECK_PROMPT = """You are a brutally accurate, nonpartisan debate fact-checker. 
@@ -46,14 +46,15 @@ class FactChecker:
     """
 
     def __init__(self):
+        settings.require_openai()
         self.client = openai.AzureOpenAI(
-            api_key=keys.azure_openai_key,
-            api_version=keys.azure_openai_api_version,
-            azure_endpoint=keys.azure_openai_endpoint,
+            api_key=settings.azure_openai_key,
+            api_version=settings.azure_openai_api_version,
+            azure_endpoint=settings.azure_openai_endpoint,
         )
         # Use a cheaper/faster model for fact-checking to keep latency low
         # Fall back to main deployment if gpt-4o-mini isn't available
-        self.deployment = getattr(keys, 'azure_openai_fast_deployment', keys.azure_openai_deployment)
+        self.deployment = settings.azure_openai_fast_deployment or settings.azure_openai_deployment
         self.enabled = True
 
     def check_async(self, statement: str, speaker: str, callback: Callable):

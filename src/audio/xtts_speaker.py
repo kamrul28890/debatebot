@@ -295,7 +295,8 @@ class DualSpeaker:
     """
 
     def __init__(self, persona: str, mode: str = "azure"):
-        assert mode in ("xtts", "azure"), f"Unknown mode: {mode}"
+        if mode not in ("xtts", "azure"):
+            raise ValueError(f"Unknown mode: {mode}")
         self.persona = persona
         self.mode = mode
 

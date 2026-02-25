@@ -1,124 +1,77 @@
+#!/usr/bin/env python3
 """
-setup.py
+Compatibility bootstrap for local setup.
 
-One-command setup for Debate Night.
-Run: python setup.py
+Recommended modern workflow:
+    python -m pip install -e .
+    python -m pip install -e ".[rag,qwen,xtts]"
 
-Does:
-1. Checks Python version (3.10+)
-2. Creates virtual environment
-3. Installs all dependencies
-4. Creates keys.py from template
-5. Creates directory structure
-6. Generates silent placeholder sounds
-7. Prints final checklist
+Legacy workflow (this script):
+    python setup.py --rag --qwen --xtts
 """
 
-import os
-import sys
-import subprocess
+import argparse
 import shutil
+import subprocess
+import sys
+from pathlib import Path
 
 
-def run(cmd, check=True):
-    print(f"  $ {cmd}")
-    result = subprocess.run(cmd, shell=True, capture_output=False)
-    if check and result.returncode != 0:
-        print(f"  ❌ Command failed: {cmd}")
-        sys.exit(1)
-    return result
+ROOT = Path(__file__).resolve().parent
 
 
-def main():
-    print("""
-╔══════════════════════════════════════════════════╗
-║       🏛️  DEBATE NIGHT — SETUP                  ║
-║           Purdue ECE49595NL / ECE59500NL         ║
-╚══════════════════════════════════════════════════╝
-""")
+def run(cmd: list[str]) -> None:
+    print(f"$ {' '.join(cmd)}")
+    subprocess.run(cmd, check=True, cwd=str(ROOT))
 
-    # ── Python version check ───────────────────────────────────────────────────
+
+def ensure_keys_file() -> None:
+    template = ROOT / "keys_template.py"
+    keys = ROOT / "keys.py"
+    if keys.exists():
+        print("keys.py already exists.")
+        return
+    if template.exists():
+        shutil.copy(template, keys)
+        print("Created keys.py from keys_template.py.")
+        print("Edit keys.py with valid credentials before runtime.")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Bootstrap Debate Night dependencies.")
+    parser.add_argument("--rag", action="store_true", help="Install RAG dependencies.")
+    parser.add_argument("--qwen", action="store_true", help="Install Qwen dependencies.")
+    parser.add_argument("--xtts", action="store_true", help="Install XTTS dependencies.")
+    parser.add_argument("--dev", action="store_true", help="Install dev/test dependencies.")
+    return parser.parse_args()
+
+
+def main() -> int:
     if sys.version_info < (3, 10):
-        print("❌ Python 3.10+ required.")
-        sys.exit(1)
-    print(f"✅ Python {sys.version_info.major}.{sys.version_info.minor}")
+        print("Python 3.10+ is required.")
+        return 1
 
-    # ── Create directories ─────────────────────────────────────────────────────
-    print("\n📁 Creating directory structure...")
-    dirs = [
-        "data/raw_trump",
-        "data/raw_biden",
-        "data/raw_siskind",
-        "data/crowd_sounds",
-        "src/brain/personas",
-        "src/audio",
-        "src/gui",
-        "src/moderator",
-        "src/utils",
-        "scripts",
-        "logs",
-    ]
-    for d in dirs:
-        os.makedirs(d, exist_ok=True)
-        print(f"   ✅ {d}/")
+    args = parse_args()
 
-    # ── Create __init__.py files ───────────────────────────────────────────────
-    init_dirs = ["src", "src/audio", "src/brain", "src/gui", "src/moderator", "src/utils"]
-    for d in init_dirs:
-        init_path = os.path.join(d, "__init__.py")
-        if not os.path.exists(init_path):
-            open(init_path, "w").close()
+    run([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+    run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt"])
 
-    # ── keys.py ────────────────────────────────────────────────────────────────
-    print("\n🔑 Checking API keys...")
-    if not os.path.exists("keys.py"):
-        shutil.copy("keys_template.py", "keys.py")
-        print("   ✅ Created keys.py from template")
-        print("   ⚠️  EDIT keys.py with your Azure credentials before running!")
-    else:
-        print("   ✅ keys.py already exists")
+    if args.rag:
+        run([sys.executable, "-m", "pip", "install", "-r", "requirements-rag.txt"])
+    if args.qwen:
+        run([sys.executable, "-m", "pip", "install", "-r", "requirements-qwen.txt"])
+    if args.xtts:
+        run([sys.executable, "-m", "pip", "install", "-r", "requirements-xtts.txt"])
+    if args.dev:
+        run([sys.executable, "-m", "pip", "install", "-r", "requirements-dev.txt"])
 
-    # ── Install dependencies ───────────────────────────────────────────────────
-    print("\n📦 Installing Python dependencies...")
-    run(f"{sys.executable} -m pip install -r requirements.txt --quiet")
-    print("   ✅ Dependencies installed")
+    ensure_keys_file()
 
-    # ── Generate placeholder sounds ────────────────────────────────────────────
-    print("\n🔊 Generating placeholder sound files...")
-    run(f"{sys.executable} scripts/download_sounds.py", check=False)
-
-    # ── Final checklist ────────────────────────────────────────────────────────
-    print("""
-╔══════════════════════════════════════════════════════════════╗
-║  ✅ SETUP COMPLETE — Pre-flight checklist:                   ║
-╠══════════════════════════════════════════════════════════════╣
-║                                                              ║
-║  1. ✏️  Edit keys.py with your Azure API keys               ║
-║                                                              ║
-║  2. 🎤 Add reference voice files:                           ║
-║     • data/raw_trump/ref.wav   (10-30s Trump speaking)      ║
-║     • data/raw_biden/ref.wav   (10-30s Biden speaking)      ║
-║     • data/raw_siskind/ref.wav (10-30s Siskind speaking)    ║
-║                                                              ║
-║  3. 🖼️  Add avatar images (already in zip):                 ║
-║     • data/raw_trump/idle.png, talking.png, listening.png   ║
-║     • data/raw_biden/idle.png, talking.png, listening.png   ║
-║     • data/raw_siskind/idle.png, talking.png, listening.png ║
-║                                                              ║
-║  4. 🔊 Add real sound files (optional but recommended):     ║
-║     • python scripts/download_sounds.py                     ║
-║                                                              ║
-║  5. 📊 Scrape speech data (optional, enriches persona):     ║
-║     • python src/utils/scraper_trump.py                     ║
-║     • python src/utils/scraper_biden.py                     ║
-║                                                              ║
-║  6. 🚀 Run the debate:                                      ║
-║     Laptop A: PERSONA=trump python src/main.py              ║
-║     Laptop B: PERSONA=biden python src/main.py              ║
-║                                                              ║
-╚══════════════════════════════════════════════════════════════╝
-""")
+    print("Setup complete.")
+    print("Run: python scripts/doctor.py")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
+
