@@ -20,23 +20,23 @@ dependencies = [
 
 [project.optional-dependencies]
 rag = [
-  "sentence-transformers>=2.7,<4",
+  "sentence-transformers>=3.0,<4",
 ]
 qwen = [
-  "torch>=2.2",
-  "transformers>=4.39,<5",
+  "torch>=2.2,<2.11",
+  "transformers>=4.41,<5",
   "peft>=0.10,<1",
   "accelerate>=0.28,<2",
-  "datasets>=2.18,<4",
+  "datasets>=2.18,<5",
   "safetensors>=0.4,<1",
   "huggingface_hub>=0.23,<1",
 ]
 xtts = [
   "TTS==0.22.0",
-  "torch>=2.2",
-  "torchaudio>=2.2",
+  "torch>=2.2,<2.11",
+  "torchaudio>=2.2,<2.11",
   "numpy==1.22.0; python_version <= '3.10'",
-  "numpy>=1.24,<3; python_version > '3.10'",
+  "numpy>=1.24.3,<3; python_version > '3.10'",
   "librosa>=0.10,<1",
   "soundfile>=0.12,<1",
 ]
@@ -45,18 +45,18 @@ dev = [
   "ruff>=0.6,<1",
 ]
 full = [
-  "sentence-transformers>=2.7,<4",
-  "torch>=2.2",
-  "transformers>=4.39,<5",
+  "sentence-transformers>=3.0,<4",
+  "torch>=2.2,<2.11",
+  "transformers>=4.41,<5",
   "peft>=0.10,<1",
   "accelerate>=0.28,<2",
-  "datasets>=2.18,<4",
+  "datasets>=2.18,<5",
   "safetensors>=0.4,<1",
   "huggingface_hub>=0.23,<1",
   "TTS==0.22.0",
-  "torchaudio>=2.2",
+  "torchaudio>=2.2,<2.11",
   "numpy==1.22.0; python_version <= '3.10'",
-  "numpy>=1.24,<3; python_version > '3.10'",
+  "numpy>=1.24.3,<3; python_version > '3.10'",
   "librosa>=0.10,<1",
   "soundfile>=0.12,<1",
 ]

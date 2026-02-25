@@ -8,14 +8,14 @@ Real-time async fact-checker.
 """
 
 import os
-import sys
+import logging
 import threading
 from typing import Callable, Optional
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-
 import openai
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 FACT_CHECK_PROMPT = """You are a brutally accurate, nonpartisan debate fact-checker. 
@@ -107,7 +107,7 @@ class FactChecker:
             callback(result)
 
         except Exception as e:
-            print(f"[FactChecker Error] {e}")
+            logger.warning("[FactChecker] Error: %s", e)
 
     def toggle(self):
         self.enabled = not self.enabled

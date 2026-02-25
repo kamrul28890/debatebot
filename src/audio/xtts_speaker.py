@@ -16,12 +16,12 @@ Pre-generation workflow:
 """
 
 import os
-import sys
 import json
 import hashlib
+import logging
 import threading
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+logger = logging.getLogger(__name__)
 
 # ── XTTS availability check ────────────────────────────────────────────────────
 XTTS_AVAILABLE = False
@@ -102,7 +102,7 @@ class XTTSSpeaker:
         os.makedirs(os.path.join(CACHE_DIR, persona), exist_ok=True)
 
         if not XTTS_AVAILABLE:
-            print(f"[XTTS] WARNING: XTTS not available - install: pip install TTS torch torchaudio")
+            logger.warning("[XTTS] Runtime unavailable - install: pip install TTS torch torchaudio")
             return
 
         self._load_model()
@@ -122,31 +122,31 @@ class XTTSSpeaker:
 
         # Exact full-text cache hit.
         if os.path.exists(full_cache):
-            print(f"[XTTS] backend=XTTS(cache) persona={self.persona}")
-            print(f"[XTTS] Cache hit - playing {os.path.basename(full_cache)}")
+            logger.info("[XTTS] backend=XTTS(cache) persona=%s", self.persona)
+            logger.debug("[XTTS] Cache hit - playing %s", os.path.basename(full_cache))
             return self._play_wav(full_cache)
 
         if not self._ready:
             return False
 
-        print(f"[XTTS] backend=XTTS(live) persona={self.persona}")
+        logger.info("[XTTS] backend=XTTS(live) persona=%s", self.persona)
         chunks = self._split_text_for_synthesis(text)
         if len(chunks) > 1:
-            print(f"[XTTS] Chunking long text into {len(chunks)} segments for faster first audio")
+            logger.info("[XTTS] Chunking long text into %s segments", len(chunks))
 
         for idx, chunk in enumerate(chunks, start=1):
             chunk_cache = _cache_path(self.persona, chunk)
             if os.path.exists(chunk_cache):
-                print(f"[XTTS] Chunk {idx}/{len(chunks)} cache hit")
+                logger.debug("[XTTS] Chunk %s/%s cache hit", idx, len(chunks))
                 if not self._play_wav(chunk_cache):
                     return False
                 continue
 
-            print(f"[XTTS] Synthesizing chunk {idx}/{len(chunks)}...")
+            logger.info("[XTTS] Synthesizing chunk %s/%s", idx, len(chunks))
             try:
                 self._synthesize(chunk, chunk_cache)
             except Exception as e:
-                print(f"[XTTS] Synthesis error on chunk {idx}: {e}")
+                logger.error("[XTTS] Synthesis error on chunk %s: %s", idx, e)
                 return False
 
             if not self._play_wav(chunk_cache):
@@ -181,10 +181,10 @@ class XTTSSpeaker:
         Run this offline before the demo.
         """
         if not self._ready:
-            print("[XTTS] Cannot pregenerate - model not loaded")
+            logger.warning("[XTTS] Cannot pre-generate - model not loaded")
             return
 
-        print(f"\n[XTTS] Pre-generating {len(texts)} audio files for {self.persona}...")
+        logger.info("[XTTS] Pre-generating %s audio files for %s", len(texts), self.persona)
         done, skipped = 0, 0
 
         for i, text in enumerate(texts):
@@ -194,16 +194,16 @@ class XTTSSpeaker:
                 continue
 
             if show_progress:
-                print(f"  [{i+1}/{len(texts)}] {text[:60]}...")
+                logger.info("[XTTS] [%s/%s] %s...", i + 1, len(texts), text[:60])
 
             try:
                 self._synthesize(text, cache)
                 done += 1
             except Exception as e:
-                print(f"  WARNING: Failed: {e}")
+                logger.warning("[XTTS] Pre-generation failed: %s", e)
 
-        print(f"[XTTS] Pre-generation done: {done} new files, {skipped} already cached")
-        print(f"   Cache dir: {os.path.join(CACHE_DIR, self.persona)}")
+        logger.info("[XTTS] Pre-generation done: %s new files, %s already cached", done, skipped)
+        logger.info("[XTTS] Cache dir: %s", os.path.join(CACHE_DIR, self.persona))
 
     def cache_size(self) -> int:
         """Number of cached audio files for this persona."""
@@ -218,7 +218,7 @@ class XTTSSpeaker:
     # ── Internal ───────────────────────────────────────────────────────────────
 
     def _load_model(self):
-        print(f"[XTTS] Loading model ({XTTS_MODEL})... (first time downloads ~1.5GB)")
+        logger.info("[XTTS] Loading model (%s)... (first run downloads ~1.5GB)", XTTS_MODEL)
         try:
             # Compatibility patch for newer PyTorch
             _orig = torch.load
@@ -229,20 +229,20 @@ class XTTSSpeaker:
 
             device = "cuda" if torch.cuda.is_available() else "cpu"
             self._tts = CoquiTTS(model_name=XTTS_MODEL).to(device)
-            print(f"[XTTS] Model loaded on {device}")
+            logger.info("[XTTS] Model loaded on %s", device)
 
             # Pre-compute voice latents from ref.wav
             ref = _ref_wav(self.persona)
             if not os.path.exists(ref):
-                print(f"[XTTS] ERROR: ref.wav not found at {ref}")
-                print(f"[XTTS] Cannot initialize XTTS for {self.persona} without reference audio")
+                logger.error("[XTTS] ref.wav not found at %s", ref)
+                logger.error("[XTTS] Cannot initialize XTTS for %s without reference audio", self.persona)
                 self._ready = False
                 return
 
             # Optional optimization. Cloning works even if this fails because
             # synthesis uses speaker_wav directly.
             try:
-                print(f"[XTTS] Computing voice fingerprint from {ref}...")
+                logger.info("[XTTS] Computing voice fingerprint from %s", ref)
                 from TTS.tts.configs.xtts_config import XttsConfig
                 torch.serialization.add_safe_globals([XttsConfig])
                 gpt_latent, speaker_emb = (
@@ -253,14 +253,14 @@ class XTTSSpeaker:
                     "gpt_cond_latent": gpt_latent,
                     "speaker_embedding": speaker_emb,
                 }
-                print(f"[XTTS] Voice fingerprint cached for {self.persona}")
+                logger.info("[XTTS] Voice fingerprint cached for %s", self.persona)
             except Exception as e:
-                print(f"[XTTS] Voice fingerprint step failed; continuing with speaker_wav clone ({e})")
+                logger.warning("[XTTS] Voice fingerprint step failed; continuing with speaker_wav clone (%s)", e)
             
             self._ready = True
-            print(f"[XTTS] {self.persona} ready for synthesis (model + ref.wav)")
+            logger.info("[XTTS] %s ready for synthesis (model + ref.wav)", self.persona)
         except Exception as e:
-            print(f"[XTTS] Model load failed: {e}")
+            logger.error("[XTTS] Model load failed: %s", e)
             import traceback
             traceback.print_exc()
             self._ready = False
@@ -274,7 +274,7 @@ class XTTSSpeaker:
             language="en",
             file_path=output_path,
         )
-        print(f"[XTTS] Synthesis path: speaker_wav clone for {self.persona} ({os.path.basename(ref)})")
+        logger.debug("[XTTS] Synthesis path: speaker_wav clone for %s (%s)", self.persona, os.path.basename(ref))
 
     @staticmethod
     def _play_wav(path: str) -> bool:
@@ -282,7 +282,7 @@ class XTTSSpeaker:
         from src.utils.platform import play_wav_blocking
         success = play_wav_blocking(path)
         if not success:
-            print(f"[XTTS] Could not play audio: {path}")
+            logger.warning("[XTTS] Could not play audio: %s", path)
         return success
 
 
@@ -308,17 +308,20 @@ class DualSpeaker:
         self.xtts_speaker = None
         if mode == "xtts":
             if XTTS_AVAILABLE:
-                print(f"[DualSpeaker:{persona}] Initializing XTTS...")
+                logger.info("[DualSpeaker:%s] Initializing XTTS...", persona)
                 self.xtts_speaker = XTTSSpeaker(persona)
                 if self.xtts_speaker._ready:
                     cached_files = self.xtts_speaker.cache_size()
-                    print(f"[DualSpeaker:{persona}] XTTS ready - {cached_files} files cached")
+                    logger.info("[DualSpeaker:%s] XTTS ready - %s files cached", persona, cached_files)
                 else:
-                    print(f"[DualSpeaker:{persona}] WARNING: XTTS initialization failed - falling back to Azure TTS")
+                    logger.warning("[DualSpeaker:%s] XTTS initialization failed - using Azure TTS", persona)
                     self.xtts_speaker = None
                     self.mode = "azure"
             else:
-                print(f"[DualSpeaker:{persona}] WARNING: XTTS not available (check: pip install TTS torch torchaudio) - using Azure TTS")
+                logger.warning(
+                    "[DualSpeaker:%s] XTTS unavailable (install: pip install TTS torch torchaudio) - using Azure TTS",
+                    persona,
+                )
                 self.mode = "azure"
 
     def speak(self, text: str):
@@ -326,12 +329,12 @@ class DualSpeaker:
         if self.mode == "xtts" and self.xtts_speaker is not None:
             success = self.xtts_speaker.speak(text)
             if success:
-                print(f"[DualSpeaker:{self.persona}] backend=XTTS")
+                logger.info("[DualSpeaker:%s] backend=XTTS", self.persona)
                 return
-            print(f"[DualSpeaker:{self.persona}] XTTS failed - backend=AZURE fallback")
+            logger.warning("[DualSpeaker:%s] XTTS failed - backend=AZURE fallback", self.persona)
 
         # Azure path (primary or fallback)
-        print(f"[DualSpeaker:{self.persona}] backend=AZURE")
+        logger.info("[DualSpeaker:%s] backend=AZURE", self.persona)
         self.azure_speaker.speak(text)
 
     def estimate_cache_coverage(self, texts: list) -> float:

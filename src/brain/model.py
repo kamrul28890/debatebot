@@ -10,15 +10,15 @@ The DebateBrain: GPT-4 powered persona engine with:
 """
 
 import os
-import sys
+import logging
 import random
 from typing import List, Optional
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import openai
 from src.brain.rag import RAGRetriever
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 # ── Debate topics ──────────────────────────────────────────────────────────────
 DEBATE_TOPICS = [
@@ -98,15 +98,15 @@ class DebateBrain:
             )
 
         # ── RAG retriever (graceful degradation if unavailable) ────────────────
-        print(f"[Brain:{persona}] Initializing RAG...")
+        logger.info("[Brain:%s] Initializing RAG...", persona)
         try:
             self.rag = RAGRetriever(persona)
             if self.rag.is_ready():
-                print(f"[Brain:{persona}] ✅ RAG ready — {self.rag.corpus_size()} quotes indexed")
+                logger.info("[Brain:%s] RAG ready - %s quotes indexed", persona, self.rag.corpus_size())
             else:
-                print(f"[Brain:{persona}] ⚠️  RAG not ready — will run without retrieval")
+                logger.warning("[Brain:%s] RAG not ready - running without retrieval", persona)
         except Exception as e:
-            print(f"[Brain:{persona}] ⚠️  RAG init error ({e}) — running without retrieval")
+            logger.warning("[Brain:%s] RAG init error (%s) - running without retrieval", persona, e)
             self.rag = None
 
         # ── Conversation history ───────────────────────────────────────────────
@@ -165,7 +165,7 @@ class DebateBrain:
             )
             reply = response.choices[0].message.content.strip()
         except Exception as e:
-            print(f"[Brain:{self.persona}] Azure API error: {e}")
+            logger.error("[Brain:%s] Azure API error: %s", self.persona, e)
             reply = self._fallback_response()
 
         self.history.append({"role": "assistant", "content": reply})
@@ -202,7 +202,7 @@ class DebateBrain:
         try:
             reply = self.qwen_brain.generate_response(opponent_text, qwen_context)
         except Exception as e:
-            print(f"[Brain:{self.persona}] Qwen generation error: {e}")
+            logger.error("[Brain:%s] Qwen generation error: %s", self.persona, e)
             reply = self._fallback_response()
 
         # Update history
@@ -291,7 +291,7 @@ class DebateBrain:
             return "\n".join(lines)
 
         except Exception as e:
-            print(f"[Brain:{self.persona}] RAG block error (non-fatal): {e}")
+            logger.warning("[Brain:%s] RAG block error (non-fatal): %s", self.persona, e)
             return None
 
     def _fallback_response(self) -> str:

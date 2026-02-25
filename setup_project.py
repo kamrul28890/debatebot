@@ -3,12 +3,11 @@
 Deprecated scaffold script.
 
 This project is already fully structured. Use:
-  python setup.py
+  python scripts/bootstrap.py --rag --qwen --xtts --doctor
 or
-  python -m pip install -e .
+  python -m pip install -e ".[rag,qwen,xtts]"
 """
 
 if __name__ == "__main__":
     print("setup_project.py is deprecated.")
-    print("Use 'python setup.py' or 'python -m pip install -e .' instead.")
-
+    print("Use 'python scripts/bootstrap.py' or 'python -m pip install -e \".[rag,qwen,xtts]\"' instead.")

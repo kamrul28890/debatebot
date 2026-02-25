@@ -9,13 +9,13 @@ Azure Neural TTS speaker with SSML prosody tuning.
 """
 
 import os
-import sys
+import logging
 import re
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 import azure.cognitiveservices.speech as speechsdk
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # ── Voice assignments ──────────────────────────────────────────────────────────
@@ -105,17 +105,17 @@ class DebateSpeaker:
         self.is_speaking = True
         ssml = self._build_ssml(text)
 
-        print(f"🗣️  [{self.persona.upper()}] {text}")
+        logger.info("[%s] %s", self.persona.upper(), text)
 
         try:
             result = self.synthesizer.speak_ssml_async(ssml).get()
             if result.reason == speechsdk.ResultReason.Canceled:
                 details = result.cancellation_details
-                print(f"[TTS Error] {details.reason}: {details.error_details}")
+                logger.warning("[TTS] Error %s: %s", details.reason, details.error_details)
                 # Fallback: plain text (no SSML)
                 self.synthesizer.speak_text_async(text).get()
         except Exception as e:
-            print(f"[Speaker Error] {e}")
+            logger.error("[Speaker] Error: %s", e)
         finally:
             self.is_speaking = False
 

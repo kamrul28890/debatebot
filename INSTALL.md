@@ -24,16 +24,24 @@ python -m pip install --upgrade pip
 
 ## 3. Install dependencies
 
-Core app:
+Recommended (single command, cross-stack conflict-safe):
 ```bash
-python -m pip install -r requirements.txt
+python scripts/bootstrap.py --rag --qwen --xtts --doctor
 ```
 
-Optional feature packs:
+Alternative (editable extras):
 ```bash
+python -m pip install -e ".[rag,qwen,xtts]"
+python -m pip check
+```
+
+Legacy split files:
+```bash
+python -m pip install -r requirements.txt
 python -m pip install -r requirements-rag.txt
 python -m pip install -r requirements-qwen.txt
 python -m pip install -r requirements-xtts.txt
+python -m pip check
 ```
 
 ## 4. Configure credentials
@@ -110,4 +118,3 @@ Run another terminal with `PERSONA=biden`.
   - Install `requirements-xtts.txt` and rerun doctor.
 - Qwen missing:
   - Install `requirements-qwen.txt` and ensure local adapters or HF token.
-

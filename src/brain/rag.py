@@ -23,10 +23,12 @@ Usage:
 
 import os
 import re
-import sys
 import pickle
 import hashlib
+import logging
 from typing import List, Optional
+
+logger = logging.getLogger(__name__)
 
 # We try to import the heavy ML libs, but gracefully handle if missing
 try:
@@ -66,7 +68,7 @@ class RAGRetriever:
             missing = []
             if not NUMPY_AVAILABLE: missing.append("numpy")
             if not SBERT_AVAILABLE: missing.append("sentence-transformers")
-            print(f"[RAG] ⚠️  Missing: {', '.join(missing)} — RAG disabled, using normal prompting")
+            logger.warning("[RAG] Missing: %s - RAG disabled, using normal prompting", ", ".join(missing))
             return
 
         self._load()
@@ -90,7 +92,7 @@ class RAGRetriever:
             results = [self._sentences[i] for i in top_indices if scores[i] > 0.2]
             return results[:k]
         except Exception as e:
-            print(f"[RAG] Retrieve error (non-fatal): {e}")
+            logger.warning("[RAG] Retrieve error (non-fatal): %s", e)
             return []
 
     def is_ready(self) -> bool:
@@ -105,26 +107,25 @@ class RAGRetriever:
         """Load corpus, build or restore embeddings index."""
         corpus = self._load_corpus()
         if not corpus:
-            print(f"[RAG] No speech data found for {self.persona}. Run the scraper first.")
-            print(f"[RAG]   python src/utils/scraper_{self.persona}.py")
+            logger.warning("[RAG] No speech data found for %s. Run scraper_%s.py first.", self.persona, self.persona)
             return
 
         self._sentences = corpus
-        print(f"[RAG] Loaded {len(corpus)} sentences for {self.persona}")
+        logger.info("[RAG] Loaded %s sentences for %s", len(corpus), self.persona)
 
         # Try to load cached embeddings
         cache_path = self._cache_path(corpus)
         if os.path.exists(cache_path):
-            print(f"[RAG] Loading cached embeddings...")
+            logger.info("[RAG] Loading cached embeddings")
             try:
                 with open(cache_path, "rb") as f:
                     self._embeddings = pickle.load(f)
-                print(f"[RAG] ✅ Cache hit — {self._embeddings.shape[0]} embeddings loaded")
+                logger.info("[RAG] Cache hit - %s embeddings loaded", self._embeddings.shape[0])
                 self._load_model()
                 self._ready = True
                 return
             except Exception as e:
-                print(f"[RAG] Cache load failed ({e}), rebuilding...")
+                logger.warning("[RAG] Cache load failed (%s), rebuilding", e)
 
         # Build embeddings from scratch
         self._build_index(corpus, cache_path)
@@ -163,13 +164,13 @@ class RAGRetriever:
     def _load_model(self):
         """Load the sentence transformer model (cached by HuggingFace after first download)."""
         if self._model is None:
-            print(f"[RAG] Loading embedding model ({SBERT_MODEL})...")
+            logger.info("[RAG] Loading embedding model (%s)", SBERT_MODEL)
             self._model = SentenceTransformer(SBERT_MODEL)
-            print(f"[RAG] ✅ Model ready")
+            logger.info("[RAG] Model ready")
 
     def _build_index(self, corpus: List[str], cache_path: str):
         """Encode all sentences and cache the result."""
-        print(f"[RAG] Building embeddings for {len(corpus)} sentences (one-time, ~30s on CPU)...")
+        logger.info("[RAG] Building embeddings for %s sentences (one-time build)", len(corpus))
         self._load_model()
 
         try:
@@ -183,10 +184,10 @@ class RAGRetriever:
             os.makedirs(CACHE_DIR, exist_ok=True)
             with open(cache_path, "wb") as f:
                 pickle.dump(self._embeddings, f)
-            print(f"[RAG] ✅ Embeddings built and cached ({self._embeddings.shape})")
+            logger.info("[RAG] Embeddings built and cached (%s)", self._embeddings.shape)
             self._ready = True
         except Exception as e:
-            print(f"[RAG] Build failed (non-fatal): {e}")
+            logger.warning("[RAG] Build failed (non-fatal): %s", e)
             self._ready = False
 
     def _cache_path(self, corpus: List[str]) -> str:

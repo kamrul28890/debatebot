@@ -11,8 +11,10 @@ Usage:
 import sys
 from pathlib import Path
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+# Allow running the script from any working directory.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 if hasattr(sys.stdout, "reconfigure"):
     # Avoid Windows cp1252 print crashes on unicode.
@@ -24,7 +26,7 @@ def test_qwen_brain() -> bool:
     """Test Qwen brain loading and basic inference."""
     try:
         try:
-            from brain.qwen_brain import QwenBrain
+            from src.brain.qwen_brain import QwenBrain
         except ImportError as e:
             print(f"[WARN] Qwen brain import failed: {e}")
             print("   This is expected if PEFT/transformers versions are incompatible")

@@ -21,8 +21,10 @@ Keyboard controls during debate:
   ESC    — End debate
 """
 
-import sys
+import logging
 import os
+import sys
+from pathlib import Path
 
 # ── SET THIS PER LAPTOP ────────────────────────────────────────────────────────
 # Mac/Linux:         PERSONA=trump python src/main.py
@@ -31,10 +33,12 @@ import os
 MY_PERSONA = os.environ.get("PERSONA", "trump")   # "trump" or "biden"
 # ──────────────────────────────────────────────────────────────────────────────
 
-# AI imports BEFORE PyQt6 to avoid DLL conflicts on Windows
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+# Allow `python src/main.py` while keeping package-safe imports.
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 # Cross-platform helpers
+from src.utils.logging_utils import setup_logging
 from src.utils.platform import enable_windows_console_colors, print_platform_info
 enable_windows_console_colors()   # no-op on Mac/Linux
 
@@ -51,6 +55,8 @@ from PyQt6.QtGui import QKeyEvent
 
 from src.gui.dashboard import DebateDashboard
 from src.gui.voice_selector import DebateModeSelector
+
+logger = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -80,10 +86,10 @@ class DebateWorker(QThread):
         self._moderator_interject = False
         self._pending_prompt = None
 
-        print(f"\n🚀 Initializing Debate Night")
-        print(f"   Persona     : {persona.upper()}")
-        print(f"   Brain type  : {brain_type.upper()}")
-        print(f"   Voice mode  : {voice_mode.upper()}")
+        logger.info("Initializing Debate Night")
+        logger.info("Persona: %s", persona.upper())
+        logger.info("Brain type: %s", brain_type.upper())
+        logger.info("Voice mode: %s", voice_mode.upper())
 
         # ── AI Brain (with RAG) ────────────────────────────────────────────────
         self.brain = DebateBrain(persona, brain_type=brain_type)
@@ -100,7 +106,7 @@ class DebateWorker(QThread):
         self.sfx     = SoundEffectsEngine()
         self.checker = FactChecker()
 
-        print(f"✅ All systems ready.\n")
+        logger.info("All systems ready")
         self.sig_ticker.emit(f"SYSTEM READY | Brain: {brain_type.upper()} | Voice: {voice_mode.upper()} | RAG: {'ON' if self.brain.rag_stats()['ready'] else 'OFF'}")
 
     # ── Main Loop ──────────────────────────────────────────────────────────────
@@ -116,9 +122,7 @@ class DebateWorker(QThread):
             except KeyboardInterrupt:
                 break
             except Exception as e:
-                print(f"[Main Loop Error] {e}")
-                import traceback
-                traceback.print_exc()
+                logger.exception("Main loop error: %s", e)
 
     def _debate_turn(self):
         # ── 1. Listen ─────────────────────────────────────────────────────────
@@ -218,7 +222,7 @@ class DebateApp:
 
     def _on_mode_selected(self, brain_mode: str, voice_mode: str):
         """Called when user picks brain and voice modes on the startup screen."""
-        print(f"\n🎬 Modes selected: Brain={brain_mode.upper()}, Voice={voice_mode.upper()}")
+        logger.info("Modes selected: Brain=%s, Voice=%s", brain_mode.upper(), voice_mode.upper())
 
         # ── Step 2: Launch main debate GUI ────────────────────────────────────
         self.gui = DebateDashboard(my_persona=self.persona)
@@ -237,7 +241,7 @@ class DebateApp:
         self.gui.keyPressEvent = self._on_key_press
         self.worker.start()
 
-        print(f"✅ Debate started! SPACE=speak  M=moderator  F=fact-check  ESC=quit\n")
+        logger.info("Debate started! SPACE=speak  M=moderator  F=fact-check  ESC=quit")
 
     def _on_key_press(self, event: QKeyEvent):
         if self.worker is None:
@@ -268,11 +272,13 @@ class DebateApp:
 # ══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    setup_logging()
+
     if MY_PERSONA not in ("trump", "biden"):
-        print(f"❌ Invalid persona '{MY_PERSONA}'. Set PERSONA=trump or PERSONA=biden")
+        logger.error("Invalid persona '%s'. Set PERSONA=trump or PERSONA=biden", MY_PERSONA)
         sys.exit(1)
 
-    print(f"""
+    logger.info(f"""
 ╔══════════════════════════════════════════════════════════════╗
 ║         🏛️  AI PRESIDENTIAL DEBATE NIGHT  🏛️                ║
 ║             Purdue University — Spring 2026                  ║

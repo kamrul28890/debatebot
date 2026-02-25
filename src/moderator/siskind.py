@@ -10,14 +10,14 @@ Professor Siskind moderator AI.
 """
 
 import os
-import sys
+import logging
 import time
 import threading
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-
 import openai
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 SISKIND_PROMPT = """You are Professor Jeffrey Mark Siskind, a computer science professor at Purdue University 
 who has been roped into moderating this chaotic AI presidential debate between Donald Trump and Joe Biden.
@@ -169,13 +169,13 @@ class SiskindModerator:
             self._speak(text)
             return text
         except Exception as e:
-            print(f"[Siskind Error] {e}")
+            logger.warning("[Siskind] Error: %s", e)
             return ""
 
     # ── Internal ───────────────────────────────────────────────────────────────
 
     def _speak(self, text: str):
-        print(f"[SISKIND] {text}")
+        logger.info("[SISKIND] %s", text)
         if self.tts_callback:
             self.tts_callback(text)
 

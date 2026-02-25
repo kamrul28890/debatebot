@@ -40,22 +40,24 @@ python -m pip install --upgrade pip
 
 ### 2. Install dependencies
 
-Core app:
+Recommended (single resolver pass, lowest conflict risk):
 ```bash
-python -m pip install -r requirements.txt
-```
-
-Optional stacks:
-```bash
-python -m pip install -r requirements-rag.txt     # RAG retrieval
-python -m pip install -r requirements-qwen.txt    # Qwen local inference + fine-tuning
-python -m pip install -r requirements-xtts.txt    # XTTS voice cloning
+python scripts/bootstrap.py --rag --qwen --xtts --doctor
 ```
 
 Alternative (editable install with extras):
 ```bash
-python -m pip install -e .
 python -m pip install -e ".[rag,qwen,xtts]"
+python -m pip check
+```
+
+Optional legacy split install:
+```bash
+python -m pip install -r requirements.txt
+python -m pip install -r requirements-rag.txt
+python -m pip install -r requirements-qwen.txt
+python -m pip install -r requirements-xtts.txt
+python -m pip check
 ```
 
 ### 3. Run environment diagnostics
@@ -152,12 +154,14 @@ Runtime fallback env vars:
 ## macOS Notes
 
 - Use Python 3.10 (recommended for compatibility with all optional stacks).
-- For XTTS on Apple Silicon, install PyTorch/torchaudio in the same venv before XTTS if needed.
+- For XTTS on Apple Silicon, keep PyTorch/torchaudio in the same venv as TTS.
 - First XTTS run downloads large model files; this is expected.
 
 ## Troubleshooting
 
 - Install conflict on non-macOS from `pyobjc`: fixed by split dependency files in this repo. Do not use old frozen lockfiles.
+- Install conflicts across optional stacks:
+  - Prefer one-shot install (`python scripts/bootstrap.py --rag --qwen --xtts`) over many separate pip commands.
 - `config.json` missing under local base model path:
   - `qwen_brain.py` resolves base model from adapter metadata and HF fallback.
 - Wrong environment:
@@ -175,4 +179,3 @@ python -m compileall -q src scripts tests
 ```
 
 CI is configured in `.github/workflows/ci.yml` to run compile + smoke tests on Windows/macOS/Linux.
-

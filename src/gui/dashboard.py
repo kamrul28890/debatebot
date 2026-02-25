@@ -14,9 +14,10 @@ Visual style:
 - Color palette: red & blue political, yellow stage lights, black outlines
 """
 
-import sys
 import os
+import logging
 import random
+import sys
 from datetime import datetime
 
 from PyQt6.QtWidgets import (
@@ -29,9 +30,9 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QRect, pyqtSignal, QThread
 
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 from src.utils.platform import impact_font, monospace_font, comic_font, serif_font
+
+logger = logging.getLogger(__name__)
 
 # ── Resolve fonts once at import time ─────────────────────────────────────────
 _IMPACT   = impact_font()
@@ -593,10 +594,9 @@ class DebateDashboard(QWidget):
 
     def keyPressEvent(self, event):
         """Keyboard shortcuts for debate control."""
-        from PyQt6.QtCore import Qt as QtCore
         key = event.key()
         # These get handled by main.py via a signal — we just pass the key
-        print(f"[GUI] Key pressed: {key}")
+        logger.debug("[GUI] Key pressed: %s", key)
         super().keyPressEvent(event)
 
 

@@ -8,14 +8,14 @@ Azure Speech-to-Text listener, Mac-optimized.
 """
 
 import os
-import sys
+import logging
 import time
 import threading
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-
 import azure.cognitiveservices.speech as speechsdk
 from src.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class DebateListener:
@@ -82,30 +82,30 @@ class DebateListener:
                 return ""
             time.sleep(0.05)
 
-        print("🎤  Listening for opponent...")
+        logger.info("Listening for opponent")
 
         result = self.recognizer.recognize_once_async().get()
 
         if result.reason == speechsdk.ResultReason.RecognizedSpeech:
             text = result.text.strip()
-            print(f"✅  Heard: '{text}'")
+            logger.info("Heard: %s", text)
 
             # Basic sanity filter — ignore very short noise artifacts
             if len(text.split()) < 2:
-                print("   (too short, ignoring)")
+                logger.debug("Speech too short, ignoring")
                 return ""
 
             return text
 
         elif result.reason == speechsdk.ResultReason.NoMatch:
-            print("⚠️  No speech recognized.")
+            logger.info("No speech recognized")
             return ""
 
         elif result.reason == speechsdk.ResultReason.Canceled:
             details = result.cancellation_details
-            print(f"❌  STT canceled: {details.reason}")
+            logger.warning("STT canceled: %s", details.reason)
             if details.reason == speechsdk.CancellationReason.Error:
-                print(f"   Error details: {details.error_details}")
+                logger.warning("STT error details: %s", details.error_details)
             return ""
 
         return ""
