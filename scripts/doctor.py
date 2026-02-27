@@ -241,7 +241,15 @@ def check_qwen_assets(report: DoctorReport) -> None:
 
 
 def check_deterministic_cache_script(report: DoctorReport) -> None:
-    path = ROOT / "data" / "cache_sessions" / "deterministic_debate_v2.json"
+    try:
+        from src.cache.deterministic import CACHE_VERSION, script_path
+
+        expected_version = CACHE_VERSION
+        path = script_path(ROOT)
+    except Exception:
+        expected_version = "unknown"
+        path = ROOT / "data" / "cache_sessions" / "deterministic_debate_v2.json"
+
     if not path.exists():
         report.warn(f"Deterministic cache script missing: {path.relative_to(ROOT)}")
         return
@@ -257,6 +265,11 @@ def check_deterministic_cache_script(report: DoctorReport) -> None:
     biden_lines = len(payload.get("biden", []))
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     fingerprint = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
+    if expected_version != "unknown" and script_version != expected_version:
+        report.warn(
+            f"Deterministic cache is stale ({script_version}); expected {expected_version}. "
+            "Run scripts/prepare_debate_cache.py --force."
+        )
     report.ok(
         f"Deterministic cache script ready ({script_version}) | turns: trump={trump_lines}, "
         f"biden={biden_lines} | sync fingerprint={fingerprint}"

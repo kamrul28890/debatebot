@@ -141,6 +141,10 @@ At startup, choose:
 Setup from GUI:
 - Click `Auto Setup (<Selected Module>)` in the selector for one-click setup.
 - Use `Prepare Cache (<Selected Module>)` to prebuild deterministic + XTTS assets in background with progress.
+- Use `Session` profile buttons:
+  - `Standard`: no session env overrides
+  - `Live Host`: enables 8-turn, ~30s profile and runs moderator on this laptop
+  - `Live Guest`: enables 8-turn, ~30s profile and expects moderator on the other laptop
 
 ## Two-Laptop Cached Debate (Recommended for Demo)
 
@@ -161,6 +165,10 @@ python scripts/setup_selected_mode.py --persona biden --combo qwen_cloned
 - In runtime ticker (cached mode): `CACHE: session sync fingerprint <hash>`
 
 4. Start both in `Cached` mode.
+
+GUI-first two-laptop launch:
+- Trump laptop: select persona `Trump`, click `Session -> Live Host`, then start.
+- Biden laptop: select persona `Biden`, click `Session -> Live Guest`, then start.
 
 If fingerprints differ, rebuild cache on both laptops with:
 ```bash
@@ -214,11 +222,50 @@ Runtime fallback env vars:
 - `HF_MODEL_REPO`
 - `QWEN_BASE_MODEL` (optional override)
 
+Live debate profile env vars:
+- `DEBATE_MAX_TURNS_PER_PERSONA` (default `8`)
+- `DEBATE_TARGET_SECONDS_PER_TURN` (default `30`)
+- `DEBATE_WORDS_PER_SECOND` (default `2.1`, used for pacing/mute windows)
+- `DEBATE_TOPIC_ROTATION_TURNS` (default `1`)
+- `DEBATE_MODERATOR_MODE` (`host_only` default, or `both` / `off`)
+- `DEBATE_HOST_PERSONA` (`trump` default)
+
 ## macOS Notes
 
 - Use Python 3.10 (recommended for compatibility with all optional stacks).
 - For XTTS on Apple Silicon, keep PyTorch/torchaudio in the same venv as TTS.
 - First XTTS run downloads large model files; this is expected.
+
+## Two-Laptop Live Debate (8-minute profile)
+
+Recommended for stage demos where Trump and Biden run on separate laptops and alternate ~30 second turns:
+
+1. Trump laptop (host moderator + candidate):
+```powershell
+$env:PERSONA="trump"
+$env:DEBATE_MODERATOR_MODE="host_only"
+$env:DEBATE_HOST_PERSONA="trump"
+$env:DEBATE_MAX_TURNS_PER_PERSONA="8"
+$env:DEBATE_TARGET_SECONDS_PER_TURN="30"
+python src/main.py
+```
+
+2. Biden laptop (candidate channel, listens to host moderator prompts):
+```powershell
+$env:PERSONA="biden"
+$env:DEBATE_MODERATOR_MODE="host_only"
+$env:DEBATE_HOST_PERSONA="trump"
+$env:DEBATE_MAX_TURNS_PER_PERSONA="8"
+$env:DEBATE_TARGET_SECONDS_PER_TURN="30"
+python src/main.py
+```
+
+The built-in topic slate now includes:
+- Economy, immigration, healthcare, war/foreign policy
+- Epstein files transparency
+- Hunter Biden pardon ethics
+- Trump legal exposure and election integrity
+- China/trade/debt
 
 ## Troubleshooting
 

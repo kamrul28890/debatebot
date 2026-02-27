@@ -51,6 +51,28 @@ MY_PERSONA = os.environ.get("PERSONA", "trump")
 enable_windows_console_colors()
 
 
+def _env_int(name: str, default: int, minimum: int = 1) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
+def _env_float(name: str, default: float, minimum: float = 0.1) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(minimum, value)
+
+
 def module_label(brain_mode: str, voice_mode: str, run_mode: str) -> str:
     brain = "QWEN" if brain_mode == "qwen" else "AZURE"
     voice = "VOICE CLONING" if voice_mode == "xtts" else "ROBOTIC VOICE"
@@ -92,6 +114,24 @@ class DebateWorker(QThread):
         self._cached_lines: list[str] = []
         self._cached_index = 0
         self._cached_script: dict = {}
+        self._max_turns = _env_int("DEBATE_MAX_TURNS_PER_PERSONA", 8)
+        self._turns_spoken = 0
+        self._topic_prompt_interval = _env_int("DEBATE_TOPIC_PROMPT_INTERVAL", 1)
+        self._target_turn_seconds = _env_float("DEBATE_TARGET_SECONDS_PER_TURN", 30.0, minimum=10.0)
+        self._speech_words_per_second = _env_float("DEBATE_WORDS_PER_SECOND", 2.1, minimum=1.0)
+        target_words = max(45, int(round(self._target_turn_seconds * self._speech_words_per_second)))
+        self._turn_min_words = max(35, target_words - 12)
+        self._turn_max_words = max(self._turn_min_words + 6, target_words + 6)
+        self._turn_hard_cap = self._turn_max_words + 10
+        self._moderator_mode = os.getenv("DEBATE_MODERATOR_MODE", "host_only").strip().lower()
+        if self._moderator_mode not in {"both", "host_only", "off"}:
+            self._moderator_mode = "host_only"
+        self._host_persona = os.getenv("DEBATE_HOST_PERSONA", "trump").strip().lower()
+        if self._host_persona not in {"trump", "biden"}:
+            self._host_persona = "trump"
+        self._moderator_enabled = self._moderator_mode == "both" or (
+            self._moderator_mode == "host_only" and self.persona == self._host_persona
+        )
         if TORCH_PRELOAD_ERROR:
             self._startup_messages.append(f"Torch preload warning: {TORCH_PRELOAD_ERROR}")
 
@@ -113,10 +153,21 @@ class DebateWorker(QThread):
         self.brain_type = self.brain.brain_type
 
         self.speaker = DualSpeaker(persona, mode=voice_mode)
-        self._siskind_speaker = DualSpeaker("siskind", mode=voice_mode)
+        self._siskind_speaker = DualSpeaker("siskind", mode=voice_mode) if self._moderator_enabled else None
         if voice_mode == "xtts" and self.speaker.mode != "xtts":
             self._startup_messages.append("Voice fallback active: XTTS unavailable, using Azure TTS.")
-        self.moderator = SiskindModerator(tts_callback=self._siskind_speak)
+        self.moderator: SiskindModerator | None = None
+        if self._moderator_enabled:
+            try:
+                self.moderator = SiskindModerator(tts_callback=self._siskind_speak)
+            except Exception as exc:
+                logger.warning("Moderator initialization failed: %s", exc)
+                self._moderator_enabled = False
+                self._startup_messages.append(
+                    "Moderator unavailable on this laptop; running candidate-only channel."
+                )
+                self._startup_messages.append(f"Moderator init reason: {exc}")
+                self._siskind_speaker = None
 
         self.ears = DebateListener()
         self.sfx = SoundEffectsEngine()
@@ -130,6 +181,15 @@ class DebateWorker(QThread):
             f"{self.brain_type.upper()} | Voice: {self.speaker.mode.upper()} | "
             f"RAG: {'ON' if rag_ready else 'OFF'} | MODE: {self.run_mode.upper()}",
         )
+        self._startup_messages.append(
+            "SESSION PROFILE | "
+            f"turns/persona: {self._max_turns} | "
+            f"target turn: ~{int(self._target_turn_seconds)}s ({self._turn_min_words}-{self._turn_max_words} words)"
+        )
+        moderator_mode = "OFF"
+        if self._moderator_enabled:
+            moderator_mode = f"ON ({self._moderator_mode}, host={self._host_persona})"
+        self._startup_messages.append(f"MODERATOR: {moderator_mode}")
 
     def run(self) -> None:
         try:
@@ -139,8 +199,11 @@ class DebateWorker(QThread):
             if self.run_mode == "cached":
                 self._initialize_cached_mode()
 
-            self.moderator.open_debate()
-            self._pending_prompt = self.moderator.introduce_topic()
+            if self.moderator is not None:
+                self.moderator.open_debate()
+                self._pending_prompt = self.moderator.introduce_topic()
+            elif self._moderator_mode == "host_only":
+                self.sig_ticker.emit("MODERATOR: passive on this laptop; waiting for host prompts.")
 
             while self._running:
                 try:
@@ -156,12 +219,21 @@ class DebateWorker(QThread):
         if not self._running:
             return
 
+        if self._turns_spoken >= self._max_turns:
+            self.sig_ticker.emit(
+                f"DEBATE COMPLETE: {self.persona.upper()} reached {self._max_turns} turns."
+            )
+            self._running = False
+            return
+
         self.sig_set_listening.emit(self.persona)
 
-        if self._moderator_interject:
+        if self._moderator_interject and self.moderator is not None:
             self._moderator_interject = False
             self._pending_prompt = self.moderator.introduce_topic()
             return
+        if self._moderator_interject:
+            self._moderator_interject = False
 
         if self._force_speak:
             self._force_speak = False
@@ -172,6 +244,22 @@ class DebateWorker(QThread):
             self.sig_ticker.emit(f"MODERATOR: {opponent_text}")
         else:
             opponent_text = self.ears.listen_for_turn()
+            if (
+                opponent_text
+                and not self._moderator_enabled
+                and self._turns_spoken == 0
+                and self._looks_like_moderator_line(opponent_text)
+            ):
+                self.sig_ticker.emit("SYNC: heard moderator prompt; waiting for first opponent response.")
+                return
+            if (
+                opponent_text
+                and self.moderator is not None
+                and self._turns_spoken > 0
+                and self._turns_spoken % self._topic_prompt_interval == 0
+            ):
+                topic_prompt = self.moderator.introduce_topic()
+                opponent_text = f"{topic_prompt}\n\nOpponent statement: {opponent_text}"
 
         if not self._running or not opponent_text:
             return
@@ -183,12 +271,18 @@ class DebateWorker(QThread):
             reply = self._next_cached_response(opponent_text)
         else:
             reply = self.brain.generate_response(opponent_text)
-        reply = self._format_turn_text(reply)
+        reply = self._format_turn_text(
+            reply,
+            target_words=(self._turn_min_words + self._turn_max_words) // 2,
+            min_words=self._turn_min_words,
+            max_words=self._turn_max_words,
+            hard_cap=self._turn_hard_cap,
+        )
         if not self._running:
             return
 
         stats = self.brain.rag_stats()
-        if stats["ready"] and self.brain.turn_count % 5 == 0:
+        if stats["ready"] and self.brain.turn_count > 0 and self.brain.turn_count % 5 == 0:
             self.sig_ticker.emit(
                 f"RAG: {stats['hits']} hits / {stats['misses']} misses | "
                 f"corpus: {stats['corpus_size']} quotes"
@@ -200,7 +294,7 @@ class DebateWorker(QThread):
             return
 
         words = len(reply.split())
-        self.ears.mute_for(words / 2.5 + 2.0)
+        self.ears.mute_for(words / self._speech_words_per_second + 1.5)
 
         self.sig_start_speaking.emit(self.persona, reply)
         self.sfx.react_to_speech(reply, self.persona)
@@ -210,6 +304,13 @@ class DebateWorker(QThread):
             logger.exception("Primary speaker failure")
             self.sig_ticker.emit("Voice output error on primary speaker.")
         self.sig_stop_speaking.emit(self.persona)
+        self._turns_spoken += 1
+
+        if self._turns_spoken >= self._max_turns:
+            self.sig_ticker.emit(
+                f"DEBATE COMPLETE: {self.persona.upper()} delivered {self._max_turns} turns."
+            )
+            self._running = False
 
     def _on_fact_check_result(self, result: dict) -> None:
         if not self._running:
@@ -229,12 +330,18 @@ class DebateWorker(QThread):
         self.sig_ticker.emit(f"FACT CHECK [{verdict}]: {claim[:60]}...")
 
     def _siskind_speak(self, text: str) -> None:
-        if not text or not self._running:
+        if not text or not self._running or self._siskind_speaker is None:
             return
 
-        text = self._format_turn_text(text)
+        text = self._format_turn_text(
+            text,
+            target_words=32,
+            min_words=12,
+            max_words=50,
+            hard_cap=60,
+        )
         words = len(text.split())
-        self.ears.mute_for(words / 2.5 + 1.5)
+        self.ears.mute_for(words / self._speech_words_per_second + 1.0)
         self.sig_start_speaking.emit("siskind", text)
         try:
             self._siskind_speaker.speak(text)
@@ -256,6 +363,8 @@ class DebateWorker(QThread):
 
         self._cached_lines = list(self._cached_script.get(self.persona, []))
         self._cached_index = 0
+        if len(self._cached_lines) > self._max_turns:
+            self._cached_lines = self._cached_lines[: self._max_turns]
 
         if not self._cached_lines:
             self.sig_ticker.emit("CACHE: no lines found for persona - using live generation")
@@ -357,10 +466,28 @@ class DebateWorker(QThread):
             clipped += "."
         return clipped
 
+    @staticmethod
+    def _looks_like_moderator_line(text: str) -> bool:
+        sample = (text or "").strip().lower()
+        hints = (
+            "good evening",
+            "our first topic",
+            "next topic",
+            "moving on",
+            "final topic",
+            "you have 30 seconds",
+            "you have thirty seconds",
+            "gentlemen",
+            "time is up",
+        )
+        return any(token in sample for token in hints)
+
     def force_speak(self) -> None:
         self._force_speak = True
 
     def trigger_moderator(self) -> None:
+        if self.moderator is None:
+            return
         self._moderator_interject = True
 
     def stop(self) -> None:
@@ -380,7 +507,8 @@ class DebateWorker(QThread):
         self._cleaned_up = True
 
         try:
-            self.moderator.stop_timer()
+            if self.moderator is not None:
+                self.moderator.stop_timer()
         except Exception:
             pass
 
@@ -400,7 +528,8 @@ class DebateWorker(QThread):
             pass
 
         try:
-            self._siskind_speaker.stop()
+            if self._siskind_speaker is not None:
+                self._siskind_speaker.stop()
         except Exception:
             pass
 

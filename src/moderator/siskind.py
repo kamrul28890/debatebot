@@ -9,73 +9,71 @@ Professor Siskind moderator AI.
 - Has its own persona (dry, academic, slightly exasperated)
 """
 
-import os
+from __future__ import annotations
+
 import logging
-import time
+import random
 import threading
+import time
 
 import openai
+
 from src.config import settings
+
 
 logger = logging.getLogger(__name__)
 
-SISKIND_PROMPT = """You are Professor Jeffrey Mark Siskind, a computer science professor at Purdue University 
+SISKIND_PROMPT = """You are Professor Jeffrey Mark Siskind, a computer science professor at Purdue University
 who has been roped into moderating this chaotic AI presidential debate between Donald Trump and Joe Biden.
 
 Your personality:
 - Dry, academic wit. You find this whole situation slightly absurd but you're a professional.
-- Occasionally break character to make a nerdy joke about neural networks or NLP
-- You're from the Northeast, formal but not stiff
-- You have seen too many terrible student presentations to be rattled by anything
-- You subtly let slip that you think Trump's rhetoric is statistically incoherent
-- You're mildly impressed when either candidate says something accurate
-- You keep time obsessively (you are a professor after all)
-- Occasionally reference the course: "As I explained in lecture 4..."
+- Occasionally break character to make a nerdy joke about neural networks or NLP.
+- Formal but not stiff.
+- You keep time obsessively.
+- You enforce concise answers and clear structure.
 
 Phrases you use:
 - "Gentlemen, please."
-- "That's... technically not wrong, but..."
-- "According to the data—"
-- "We're going to move on now."
-- "I've graded worse arguments than that."
+- "That is technically not wrong, but..."
+- "According to the data-"
+- "We are going to move on now."
+- "I have graded worse arguments than that."
 - "Mr. [Trump/Biden], your time is up."
-- "This is not a graduate seminar, but let's at least try for coherent claims."
 
-Keep all responses to 1-2 sentences. You are a moderator, not a debater.
+Keep responses to 1-2 sentences. You are a moderator, not a debater.
 """
 
 TOPIC_INTRODUCTIONS = [
-    "Our first topic tonight is the economy and inflation. Mr. Trump, you have 30 seconds.",
-    "Moving on — we'll discuss immigration and border security. Mr. Biden, your response.",
-    "Next topic: foreign policy and America's role in NATO. Mr. Trump.",
-    "Gentlemen, we turn to healthcare and social security. Mr. Biden.",
-    "Our next topic is crime and public safety. I expect coherent responses. Mr. Trump.",
-    "We'll now discuss climate change and energy policy. Mr. Biden.",
-    "The topic is democracy and election integrity. And yes, I'm aware of the irony. Mr. Trump.",
-    "Final topic: U.S.-China relations and trade. Mr. Biden, you may begin.",
+    "Round one: economy, inflation, and wages. Mr. Trump, thirty seconds.",
+    "Round two: immigration, border enforcement, and asylum processing. Mr. Biden.",
+    "Round three: healthcare costs, prescription drugs, and Medicare stability. Mr. Trump.",
+    "Round four: wars abroad, NATO commitments, and U.S. deterrence strategy. Mr. Biden.",
+    "Round five: Epstein file transparency and accountability for powerful people. Mr. Trump.",
+    "Round six: Hunter Biden pardon ethics and Justice Department independence. Mr. Biden.",
+    "Round seven: presidential legal exposure, election integrity, and rule of law. Mr. Trump.",
+    "Round eight: China competition, trade resilience, debt, and industrial policy. Mr. Biden.",
 ]
 
 WARNINGS = [
     "Fifteen seconds remaining, gentlemen.",
     "Time, please. Wrap up your thought.",
     "Mr. {speaker}, I need you to conclude.",
-    "That's time. We're moving on whether you're finished or not.",
+    "That is time. We are moving on whether you are finished or not.",
 ]
 
 ORDER_INTERJECTIONS = [
     "Gentlemen. Gentlemen. This is not helpful.",
-    "Please. I've seen better debate behavior in my undergraduate AI class.",
+    "Please. I have seen better debate behavior in my undergraduate AI class.",
     "One at a time. This is a debate, not a neural network diverging.",
     "Mr. Trump. Mr. Biden. We have rules.",
-    "I'm going to need both of you to stop. Now.",
-    "As I said in lecture — structure matters. Please use some.",
+    "I am going to need both of you to stop. Now.",
+    "As I said in lecture - structure matters. Please use some.",
 ]
 
-OPENING_MONOLOGUE = """Good evening. I'm Professor Jeffrey Siskind from Purdue University's 
-ECE department, and I have been asked — against my better judgment — to moderate tonight's 
-AI presidential debate. The candidates have been trained on public domain speech data 
-and will be evaluated on coherence, factual accuracy, and staying under 50 words per response. 
-Two of those three metrics I expect to be violated immediately. Let's begin."""
+OPENING_MONOLOGUE = """Good evening. I am Professor Jeffrey Siskind from Purdue ECE, moderating this AI debate.
+Format tonight: alternating thirty-second turns, roughly eight rounds per candidate, with strict topic discipline.
+I care about coherence, factual support, and complete answers. Please treat those as hard constraints, not suggestions."""
 
 
 class SiskindModerator:
@@ -100,8 +98,7 @@ class SiskindModerator:
         self.timer_active = False
         self.current_speaker = None
 
-    # ── Public API ─────────────────────────────────────────────────────────────
-
+    # Public API
     def open_debate(self) -> str:
         """Returns + speaks the opening monologue."""
         self._speak(OPENING_MONOLOGUE)
@@ -113,13 +110,12 @@ class SiskindModerator:
             text = TOPIC_INTRODUCTIONS[self.topic_index]
             self.topic_index += 1
         else:
-            text = "Gentlemen, we've covered everything. Final thoughts, please. Thirty seconds each."
+            text = "We have covered all rounds. Final closing thought, thirty seconds each."
         self._speak(text)
         return text
 
     def restore_order(self) -> str:
         """Called when both candidates are talking at once."""
-        import random
         text = random.choice(ORDER_INTERJECTIONS)
         self._speak(text)
         return text
@@ -139,7 +135,7 @@ class SiskindModerator:
                 self._speak(warning)
                 time.sleep(warning_at)
             if self.timer_active:
-                timeout = f"That's time, {speaker.title()}. We're moving on."
+                timeout = f"That is time, {speaker.title()}. We are moving on."
                 self._speak(timeout)
                 self.timer_active = False
 
@@ -172,15 +168,14 @@ class SiskindModerator:
             logger.warning("[Siskind] Error: %s", e)
             return ""
 
-    # ── Internal ───────────────────────────────────────────────────────────────
-
+    # Internal
     def _speak(self, text: str):
         logger.info("[SISKIND] %s", text)
         if self.tts_callback:
             self.tts_callback(text)
 
 
-# ── Standalone test ────────────────────────────────────────────────────────────
+# Standalone test
 if __name__ == "__main__":
     def fake_tts(text):
         print(f"  >> TTS: {text}")

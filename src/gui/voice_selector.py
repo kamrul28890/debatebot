@@ -91,6 +91,7 @@ class DebateModeSelector(QWidget):
         self._selected_combo = "azure_robotic"
         self._selected_brain = COMBOS[self._selected_combo]["brain"]
         self._selected_voice = COMBOS[self._selected_combo]["voice"]
+        self._session_profile = "standard"
 
         self._availability: dict = {}
         self._task_process: QProcess | None = None
@@ -110,6 +111,7 @@ class DebateModeSelector(QWidget):
 
         self._build_ui()
         self._set_persona(self.persona)
+        self._set_session_profile("standard")
 
     def _build_ui(self) -> None:
         root = QHBoxLayout(self)
@@ -160,6 +162,29 @@ class DebateModeSelector(QWidget):
             persona_row.addWidget(btn)
         persona_row.addStretch()
         left_layout.addLayout(persona_row)
+
+        profile_row = QHBoxLayout()
+        profile_row.setSpacing(6)
+        profile_lbl = QLabel("Session")
+        profile_lbl.setStyleSheet(f"color: {COLORS['text']}; font-size: 12px; font-weight: 700;")
+        profile_row.addWidget(profile_lbl)
+
+        self.btn_profile_standard = QPushButton("Standard")
+        self.btn_profile_host = QPushButton("Live Host")
+        self.btn_profile_guest = QPushButton("Live Guest")
+        for btn in (self.btn_profile_standard, self.btn_profile_host, self.btn_profile_guest):
+            btn.setCheckable(True)
+            btn.setMinimumWidth(98)
+            btn.clicked.connect(self._on_profile_button_clicked)
+            profile_row.addWidget(btn)
+        profile_row.addStretch()
+        left_layout.addLayout(profile_row)
+
+        self.profile_note = QLabel("")
+        self.profile_note.setWordWrap(True)
+        self.profile_note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.profile_note.setStyleSheet(f"color: {COLORS['muted']}; font-size: 10px;")
+        left_layout.addWidget(self.profile_note)
 
         modules_lbl = QLabel("Modules (4 combinations)")
         modules_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -418,6 +443,14 @@ class DebateModeSelector(QWidget):
         elif self.sender() is self.btn_biden:
             self._set_persona("biden")
 
+    def _on_profile_button_clicked(self) -> None:
+        if self.sender() is self.btn_profile_standard:
+            self._set_session_profile("standard")
+        elif self.sender() is self.btn_profile_host:
+            self._set_session_profile("two_laptop_host")
+        elif self.sender() is self.btn_profile_guest:
+            self._set_session_profile("two_laptop_guest")
+
     def _set_persona(self, persona: str) -> None:
         self.persona = persona
         self.btn_trump.setChecked(persona == "trump")
@@ -427,6 +460,7 @@ class DebateModeSelector(QWidget):
         self.subtitle.setText(f"Persona: {self.persona.upper()} | Choose one module and start")
         self._refresh_availability()
         self._sync_visual_selection()
+        self._update_profile_note()
 
     def _style_persona_buttons(self) -> None:
         trump_selected = self.btn_trump.isChecked()
@@ -458,6 +492,77 @@ class DebateModeSelector(QWidget):
             }}
             """
         )
+
+    def _set_session_profile(self, profile: str) -> None:
+        if profile not in ("standard", "two_laptop_host", "two_laptop_guest"):
+            profile = "standard"
+        self._session_profile = profile
+        self.btn_profile_standard.setChecked(profile == "standard")
+        self.btn_profile_host.setChecked(profile == "two_laptop_host")
+        self.btn_profile_guest.setChecked(profile == "two_laptop_guest")
+        self._style_profile_buttons()
+        self._update_profile_note()
+
+    def _style_profile_buttons(self) -> None:
+        styles = (
+            (self.btn_profile_standard, "#2f6e8f", self._session_profile == "standard"),
+            (self.btn_profile_host, "#2f7b4d", self._session_profile == "two_laptop_host"),
+            (self.btn_profile_guest, "#7b5a2f", self._session_profile == "two_laptop_guest"),
+        )
+        for btn, accent, selected in styles:
+            btn.setStyleSheet(
+                f"""
+                QPushButton {{
+                    background-color: {'#263240' if not selected else accent};
+                    color: {'#d5e3f0' if not selected else 'white'};
+                    border: 1px solid {'#47586a' if not selected else accent};
+                    border-radius: 6px;
+                    padding: 4px 8px;
+                    font-size: 10px;
+                    font-weight: 700;
+                }}
+                """
+            )
+
+    def _update_profile_note(self) -> None:
+        if self._session_profile == "two_laptop_host":
+            text = (
+                "Live Host profile: this laptop runs moderator + candidate with ~8 turns at ~30s each."
+            )
+        elif self._session_profile == "two_laptop_guest":
+            host = "biden" if self.persona == "trump" else "trump"
+            text = (
+                f"Live Guest profile: this laptop runs candidate-only and expects moderator on {host.upper()} laptop."
+            )
+        else:
+            text = "Standard profile: no automatic debate timing/session overrides."
+        self.profile_note.setText(text)
+
+    def _apply_session_profile_env(self) -> None:
+        keys = (
+            "DEBATE_MODERATOR_MODE",
+            "DEBATE_HOST_PERSONA",
+            "DEBATE_MAX_TURNS_PER_PERSONA",
+            "DEBATE_TARGET_SECONDS_PER_TURN",
+            "DEBATE_TOPIC_ROTATION_TURNS",
+            "DEBATE_WORDS_PER_SECOND",
+        )
+        if self._session_profile == "standard":
+            for key in keys:
+                os.environ.pop(key, None)
+            return
+
+        if self._session_profile == "two_laptop_host":
+            host_persona = self.persona
+        else:
+            host_persona = "biden" if self.persona == "trump" else "trump"
+
+        os.environ["DEBATE_MODERATOR_MODE"] = "host_only"
+        os.environ["DEBATE_HOST_PERSONA"] = host_persona
+        os.environ["DEBATE_MAX_TURNS_PER_PERSONA"] = "8"
+        os.environ["DEBATE_TARGET_SECONDS_PER_TURN"] = "30"
+        os.environ["DEBATE_TOPIC_ROTATION_TURNS"] = "1"
+        os.environ["DEBATE_WORDS_PER_SECOND"] = "2.1"
 
     def _refresh_availability(self, force_probe: bool = False) -> None:
         qwen_info = self._qwen_state(force_probe=force_probe)
@@ -754,6 +859,13 @@ class DebateModeSelector(QWidget):
         if fingerprint:
             lines.append(f"[INFO] Session sync fingerprint: {fingerprint}")
             lines.append("[INFO] For dual-laptop debates, both machines should show the same fingerprint.")
+        if self._session_profile == "two_laptop_host":
+            lines.append(f"[INFO] Session profile: LIVE HOST ({self.persona.upper()} laptop moderates)")
+        elif self._session_profile == "two_laptop_guest":
+            host = "biden" if self.persona == "trump" else "trump"
+            lines.append(f"[INFO] Session profile: LIVE GUEST (expects moderator on {host.upper()})")
+        else:
+            lines.append("[INFO] Session profile: STANDARD")
 
         self.status_panel.setText("\n".join(lines))
 
@@ -899,6 +1011,7 @@ class DebateModeSelector(QWidget):
                 if not proceed:
                     return
 
+        self._apply_session_profile_env()
         self.mode_selected.emit(self.persona, self._selected_brain, self._selected_voice, run_mode)
         self.close()
 

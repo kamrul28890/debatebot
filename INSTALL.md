@@ -116,9 +116,40 @@ PERSONA=trump python src/main.py
 
 Run another terminal with `PERSONA=biden`.
 
+Recommended two-laptop live profile (host on Trump laptop):
+
+Windows PowerShell:
+```powershell
+# Trump laptop
+$env:PERSONA="trump"
+$env:DEBATE_MODERATOR_MODE="host_only"
+$env:DEBATE_HOST_PERSONA="trump"
+$env:DEBATE_MAX_TURNS_PER_PERSONA="8"
+$env:DEBATE_TARGET_SECONDS_PER_TURN="30"
+python src/main.py
+
+# Biden laptop
+$env:PERSONA="biden"
+$env:DEBATE_MODERATOR_MODE="host_only"
+$env:DEBATE_HOST_PERSONA="trump"
+$env:DEBATE_MAX_TURNS_PER_PERSONA="8"
+$env:DEBATE_TARGET_SECONDS_PER_TURN="30"
+python src/main.py
+```
+
+macOS/Linux:
+```bash
+PERSONA=trump DEBATE_MODERATOR_MODE=host_only DEBATE_HOST_PERSONA=trump DEBATE_MAX_TURNS_PER_PERSONA=8 DEBATE_TARGET_SECONDS_PER_TURN=30 python src/main.py
+PERSONA=biden DEBATE_MODERATOR_MODE=host_only DEBATE_HOST_PERSONA=trump DEBATE_MAX_TURNS_PER_PERSONA=8 DEBATE_TARGET_SECONDS_PER_TURN=30 python src/main.py
+```
+
 GUI-first setup option:
 - Launch `python src/main.py`
 - In selector, choose module/persona
+- Choose `Session` profile:
+  - `Standard` for normal operation
+  - `Live Host` on the moderator laptop
+  - `Live Guest` on the other laptop
 - Click `Auto Setup (<Selected Module>)`
 - Watch progress in the right panel (non-blocking background task)
 
