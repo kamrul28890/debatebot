@@ -10,6 +10,7 @@ import logging
 import os
 import re
 import sys
+from typing import Optional
 from pathlib import Path
 
 # Keep startup output clean on all platforms.
@@ -117,6 +118,7 @@ class DebateWorker(QThread):
         self._max_turns = _env_int("DEBATE_MAX_TURNS_PER_PERSONA", 8)
         self._turns_spoken = 0
         self._topic_prompt_interval = _env_int("DEBATE_TOPIC_PROMPT_INTERVAL", 1)
+        self._listen_timeout_seconds = _env_int("DEBATE_LISTEN_TIMEOUT_SECONDS", 45)
         self._target_turn_seconds = _env_float("DEBATE_TARGET_SECONDS_PER_TURN", 30.0, minimum=10.0)
         self._speech_words_per_second = _env_float("DEBATE_WORDS_PER_SECOND", 2.1, minimum=1.0)
         target_words = max(45, int(round(self._target_turn_seconds * self._speech_words_per_second)))
@@ -184,7 +186,8 @@ class DebateWorker(QThread):
         self._startup_messages.append(
             "SESSION PROFILE | "
             f"turns/persona: {self._max_turns} | "
-            f"target turn: ~{int(self._target_turn_seconds)}s ({self._turn_min_words}-{self._turn_max_words} words)"
+            f"target turn: ~{int(self._target_turn_seconds)}s ({self._turn_min_words}-{self._turn_max_words} words) | "
+            f"listen timeout: {self._listen_timeout_seconds}s"
         )
         moderator_mode = "OFF"
         if self._moderator_enabled:
@@ -243,15 +246,36 @@ class DebateWorker(QThread):
             self._pending_prompt = None
             self.sig_ticker.emit(f"MODERATOR: {opponent_text}")
         else:
-            opponent_text = self.ears.listen_for_turn()
+            opponent_text = self.ears.listen_for_turn(timeout_seconds=self._listen_timeout_seconds)
             if (
                 opponent_text
                 and not self._moderator_enabled
-                and self._turns_spoken == 0
                 and self._looks_like_moderator_line(opponent_text)
             ):
-                self.sig_ticker.emit("SYNC: heard moderator prompt; waiting for first opponent response.")
-                return
+                if self._moderator_addresses_persona(opponent_text, self.persona):
+                    logger.info(
+                        "Guest sync: moderator cue addressed to %s; proceeding to respond.",
+                        self.persona,
+                    )
+                    self.sig_ticker.emit("SYNC: heard moderator cue for this channel; responding.")
+                else:
+                    extracted = self._extract_opponent_statement_after_other_persona_cue(opponent_text, self.persona)
+                    if extracted:
+                        logger.info("Guest sync: merged moderator+opponent transcript; using extracted opponent content.")
+                        self.sig_ticker.emit("SYNC: merged cue+opponent transcript; proceeding.")
+                        opponent_text = extracted
+                    else:
+                        logger.info(
+                            "Guest sync: moderator cue addressed to other side; holding. text=%s",
+                            opponent_text,
+                        )
+                        if self._turns_spoken == 0:
+                            self.sig_ticker.emit(
+                                "SYNC: heard moderator prompt for other side; waiting for first opponent response."
+                            )
+                        else:
+                            self.sig_ticker.emit("SYNC: heard moderator cue for other side; holding.")
+                        return
             if (
                 opponent_text
                 and self.moderator is not None
@@ -475,12 +499,82 @@ class DebateWorker(QThread):
             "next topic",
             "moving on",
             "final topic",
+            "round one",
+            "round two",
+            "round three",
+            "round four",
+            "round five",
+            "round six",
+            "round seven",
+            "round eight",
+            "thirty seconds",
             "you have 30 seconds",
             "you have thirty seconds",
             "gentlemen",
             "time is up",
+            "seconds remaining",
+            "we are moving on",
         )
         return any(token in sample for token in hints)
+
+    @staticmethod
+    def _moderator_addresses_persona(text: str, persona: str) -> bool:
+        """
+        Return True when a moderator line explicitly calls on this persona.
+        """
+        sample = re.sub(r"[^a-z0-9\s]", " ", (text or "").strip().lower())
+        sample = " ".join(sample.split())
+
+        mine = ("trump", "donald", "mr trump") if persona == "trump" else ("biden", "joe", "mr biden")
+        other = ("biden", "joe", "mr biden") if persona == "trump" else ("trump", "donald", "mr trump")
+
+        if any(token in sample for token in mine):
+            return True
+        if any(token in sample for token in other):
+            return False
+        return False
+
+    @staticmethod
+    def _extract_opponent_statement_after_other_persona_cue(text: str, persona: str) -> Optional[str]:
+        """
+        Sometimes STT merges "Mr. X, thirty seconds." plus X's speech into one transcript.
+        If the cue targets the other persona, try to extract the trailing opponent content.
+        """
+        sample = " ".join((text or "").split())
+        if not sample:
+            return None
+
+        other_patterns = (
+            r"\bmr\.?\s+trump\b",
+            r"\bdonald\b",
+        ) if persona == "biden" else (
+            r"\bmr\.?\s+biden\b",
+            r"\bjoe\b",
+        )
+
+        last_end = -1
+        for pat in other_patterns:
+            for match in re.finditer(pat, sample, flags=re.IGNORECASE):
+                last_end = max(last_end, match.end())
+        if last_end < 0 or last_end >= len(sample):
+            return None
+
+        tail = sample[last_end:].lstrip(" ,:-")
+        if not tail:
+            return None
+
+        # Drop the first cue sentence when it is still moderator control text.
+        cue_words = ("seconds", "time", "round", "topic", "moving on", "you have")
+        first_sentence = re.split(r"(?<=[.!?])\s+", tail, maxsplit=1)[0]
+        if any(word in first_sentence.lower() for word in cue_words):
+            parts = re.split(r"(?<=[.!?])\s+", tail, maxsplit=1)
+            if len(parts) == 2:
+                tail = parts[1].strip()
+
+        cleaned = " ".join(tail.split())
+        if len(cleaned.split()) < 8:
+            return None
+        return cleaned
 
     def force_speak(self) -> None:
         self._force_speak = True

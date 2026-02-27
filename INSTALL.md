@@ -2,6 +2,26 @@
 
 This guide is for a clean setup on Windows, macOS, or Linux.
 
+## Course Submission Notes
+
+For Brightspace submission, include code/docs only:
+- Do not include downloaded model weights.
+- Do not include trained model weights/checkpoints.
+- Do not include local secrets (`keys.py`, `.env*`).
+
+External model pointers used by this project:
+- Qwen base model: `Qwen/Qwen2.5-0.5B` (Hugging Face)
+- Embedding model: `sentence-transformers/all-MiniLM-L6-v2` (Hugging Face)
+- XTTS model: `tts_models/multilingual/multi-dataset/xtts_v2` (Coqui TTS downloader)
+
+Example zip command (macOS/Linux):
+```bash
+zip -r debatebot_submission.zip . \
+  -x ".git/*" ".venv/*" "__pycache__/*" "*.pyc" \
+     "data/models/*" "data/cache_sessions/*" "data/xtts_cache/*" ".rag_cache/*" \
+     "keys.py" ".env" ".env.*"
+```
+
 ## 0. One-command setup for first-time users (recommended)
 
 Pick a module combo and run:

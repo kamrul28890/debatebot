@@ -23,6 +23,28 @@ AI presidential debate simulator with selectable brain and voice backends:
   - `scripts/upload_to_huggingface.py`
   - `scripts/doctor.py`
 
+## Course Submission Compliance
+
+This repository is prepared for the course submission constraints:
+- No downloaded software or model weights are committed.
+- No trained model weights are committed.
+- The repo contains code to reproduce training and setup, not trained artifacts.
+- Team demos are two-laptop, speech-only debates (no bot-to-bot network link).
+
+Pointers for externally downloaded assets/models:
+- Qwen base model: `Qwen/Qwen2.5-0.5B` (Hugging Face)
+- Sentence embedding model: `sentence-transformers/all-MiniLM-L6-v2` (Hugging Face)
+- XTTS model: `tts_models/multilingual/multi-dataset/xtts_v2` (downloaded by Coqui TTS)
+- Audio/media provenance: `data/SOURCES.md` and `data/crowd_sounds/SOURCES.json`
+
+To build a submission zip (code/docs only), run:
+```bash
+zip -r debatebot_submission.zip . \
+  -x ".git/*" ".venv/*" "__pycache__/*" "*.pyc" \
+     "data/models/*" "data/cache_sessions/*" "data/xtts_cache/*" ".rag_cache/*" \
+     "keys.py" ".env" ".env.*"
+```
+
 ## Installation
 
 ### 0. Fastest First-Time Setup (Recommended)

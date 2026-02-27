@@ -8,6 +8,7 @@ Azure Speech-to-Text listener, Mac-optimized.
 """
 
 import logging
+import os
 import time
 import threading
 
@@ -29,6 +30,28 @@ class DebateListener:
 
     def __init__(self, silence_timeout_ms: int = 1500, initial_silence_timeout_ms: int = 8000):
         settings.require_speech()
+        self._silence_timeout_ms = _env_int("DEBATE_STT_SEGMENTATION_SILENCE_MS", silence_timeout_ms)
+        self._initial_silence_timeout_ms = _env_int("DEBATE_STT_INITIAL_SILENCE_MS", initial_silence_timeout_ms)
+        # Cap one utterance length so recognize_once doesn't wait forever on near-continuous audio.
+        self._segmentation_max_ms = _env_int("DEBATE_STT_SEGMENTATION_MAX_MS", 25000)
+        self._end_silence_timeout_ms = _env_int("DEBATE_STT_END_SILENCE_MS", 700)
+        self._recognizer_lock = threading.Lock()
+        self._listen_lock = threading.Lock()
+        self.recognizer = self._build_recognizer()
+        logger.info(
+            "STT config: initial_silence=%sms segmentation_silence=%sms segmentation_max=%sms end_silence=%sms",
+            self._initial_silence_timeout_ms,
+            self._silence_timeout_ms,
+            self._segmentation_max_ms,
+            self._end_silence_timeout_ms,
+        )
+
+        # ── Echo suppression state ─────────────────────────────────────────────
+        self._muted_until = 0.0  # epoch time until which we ignore audio
+        self._mute_lock = threading.Lock()
+        self._stop_event = threading.Event()
+
+    def _build_recognizer(self) -> speechsdk.SpeechRecognizer:
         speech_config = speechsdk.SpeechConfig(
             subscription=settings.azure_speech_key,
             region=settings.azure_speech_region,
@@ -37,25 +60,39 @@ class DebateListener:
         # ── Silence detection tuning ───────────────────────────────────────────
         speech_config.set_property(
             speechsdk.PropertyId.Speech_SegmentationSilenceTimeoutMs,
-            str(silence_timeout_ms),
+            str(self._silence_timeout_ms),
         )
         speech_config.set_property(
             speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs,
-            str(initial_silence_timeout_ms),
+            str(self._initial_silence_timeout_ms),
+        )
+        speech_config.set_property(
+            speechsdk.PropertyId.Speech_SegmentationMaximumTimeMs,
+            str(self._segmentation_max_ms),
+        )
+        speech_config.set_property(
+            speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs,
+            str(self._end_silence_timeout_ms),
         )
 
         # ── Use MacBook default microphone ─────────────────────────────────────
         audio_config = speechsdk.audio.AudioConfig(use_default_microphone=True)
-
-        self.recognizer = speechsdk.SpeechRecognizer(
+        return speechsdk.SpeechRecognizer(
             speech_config=speech_config,
             audio_config=audio_config,
         )
 
-        # ── Echo suppression state ─────────────────────────────────────────────
-        self._muted_until = 0.0  # epoch time until which we ignore audio
-        self._mute_lock = threading.Lock()
-        self._stop_event = threading.Event()
+    def _reset_recognizer(self, reason: str) -> None:
+        logger.warning("Resetting STT recognizer: %s", reason)
+        with self._recognizer_lock:
+            old = self.recognizer
+            try:
+                old.stop_continuous_recognition_async()
+            except Exception:
+                pass
+            # Avoid rapid reconnect churn after transport/protocol failures.
+            time.sleep(0.2)
+            self.recognizer = self._build_recognizer()
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -73,11 +110,12 @@ class DebateListener:
         Safe to call multiple times.
         """
         self._stop_event.set()
-        try:
-            # Defensive: only affects continuous mode, but harmless here.
-            self.recognizer.stop_continuous_recognition_async()
-        except Exception:
-            pass
+        with self._recognizer_lock:
+            try:
+                # Defensive: only affects continuous mode, but harmless here.
+                self.recognizer.stop_continuous_recognition_async()
+            except Exception:
+                pass
 
     def close(self):
         self.stop()
@@ -88,70 +126,61 @@ class DebateListener:
         Returns the recognized text, or "" if nothing heard.
         """
         # Wait if we're in mute window (echo suppression)
-        wait_start = time.time()
+        deadline = time.time() + timeout_seconds
         while True:
             if self._stop_event.is_set():
                 return ""
             with self._mute_lock:
                 if time.time() >= self._muted_until:
                     break
-            if time.time() - wait_start > timeout_seconds:
+            if time.time() >= deadline:
                 return ""
             time.sleep(0.05)
 
         logger.info("Listening for opponent")
 
-        # Run recognition on a helper thread so stop() can interrupt the wait loop.
-        result_holder = {}
-        done = threading.Event()
+        with self._listen_lock:
+            with self._recognizer_lock:
+                recognizer = self.recognizer
 
-        def _recognize_once():
             try:
-                result_holder["result"] = self.recognizer.recognize_once_async().get()
+                result = recognizer.recognize_once_async().get()
             except Exception as exc:
-                result_holder["error"] = exc
-            finally:
-                done.set()
-
-        threading.Thread(target=_recognize_once, daemon=True).start()
-
-        while not done.wait(0.05):
-            if self._stop_event.is_set():
-                return ""
-            if time.time() - wait_start > timeout_seconds:
+                detail = str(exc)
+                logger.warning("STT recognize_once failed: %s", detail)
+                if "SPXERR_START_RECOGNIZING_INVALID_STATE_TRANSITION" in detail:
+                    self._reset_recognizer("invalid state transition")
                 return ""
 
-        if "error" in result_holder:
-            logger.warning("STT recognize_once failed: %s", result_holder["error"])
-            return ""
-
-        result = result_holder.get("result")
-        if result is None:
-            return ""
-
-        if result.reason == speechsdk.ResultReason.RecognizedSpeech:
-            text = result.text.strip()
-            logger.info("Heard: %s", text)
-
-            # Basic sanity filter — ignore very short noise artifacts
-            if len(text.split()) < 2:
-                logger.debug("Speech too short, ignoring")
+            if result is None:
                 return ""
 
-            return text
+            if result.reason == speechsdk.ResultReason.RecognizedSpeech:
+                text = result.text.strip()
+                logger.info("Heard: %s", text)
 
-        elif result.reason == speechsdk.ResultReason.NoMatch:
-            logger.info("No speech recognized")
+                # Basic sanity filter — ignore very short noise artifacts
+                if len(text.split()) < 2:
+                    logger.debug("Speech too short, ignoring")
+                    return ""
+
+                return text
+
+            if result.reason == speechsdk.ResultReason.NoMatch:
+                logger.info("No speech recognized")
+                return ""
+
+            if result.reason == speechsdk.ResultReason.Canceled:
+                details = result.cancellation_details
+                logger.warning("STT canceled: %s", details.reason)
+                if details.reason == speechsdk.CancellationReason.Error:
+                    err_detail = str(details.error_details or "")
+                    logger.warning("STT error details: %s", err_detail)
+                    if "SPXERR_START_RECOGNIZING_INVALID_STATE_TRANSITION" in err_detail:
+                        self._reset_recognizer("invalid state transition")
+                return ""
+
             return ""
-
-        elif result.reason == speechsdk.ResultReason.Canceled:
-            details = result.cancellation_details
-            logger.warning("STT canceled: %s", details.reason)
-            if details.reason == speechsdk.CancellationReason.Error:
-                logger.warning("STT error details: %s", details.error_details)
-            return ""
-
-        return ""
 
     def listen_for_interjection(self) -> str:
         """
@@ -167,6 +196,17 @@ class DebateListener:
         if result.reason == speechsdk.ResultReason.RecognizedSpeech:
             return result.text.strip()
         return ""
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return max(1, value)
 
 
 # ── Standalone test ────────────────────────────────────────────────────────────

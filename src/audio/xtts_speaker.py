@@ -51,6 +51,31 @@ except Exception as e:
     logger.debug("[XTTS] Runtime import detail: %s", e)
 
 
+def _apply_transformers_compat_patch() -> None:
+    """
+    Coqui XTTS 0.22 still imports BeamSearchScorer from `transformers` top-level.
+    Newer transformers versions removed that export, so we restore it when needed.
+    """
+    try:
+        import transformers
+        if hasattr(transformers, "BeamSearchScorer"):
+            return
+        from transformers.generation.beam_search import BeamSearchScorer
+        transformers.BeamSearchScorer = BeamSearchScorer
+        logger.info("[XTTS] Applied transformers compatibility shim for BeamSearchScorer")
+    except Exception as e:
+        logger.debug("[XTTS] Transformers compatibility shim skipped: %s", e)
+
+
+def _best_torch_device() -> str:
+    """Pick fastest available backend for local XTTS synthesis."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 # â”€â”€ Cache config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 BASE_DIR   = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 CACHE_DIR  = os.path.join(BASE_DIR, "data", "xtts_cache")
@@ -101,6 +126,7 @@ class XTTSSpeaker:
     _shared_device = None
     _shared_lock = threading.Lock()
     _torch_patch_applied = False
+    _transformers_patch_applied = False
 
     def __init__(self, persona: str):
         self.persona = persona
@@ -274,6 +300,10 @@ class XTTSSpeaker:
                 if XTTSSpeaker._shared_tts is None:
                     logger.info("[XTTS] Loading shared model (first run may download ~1.5GB)")
 
+                    if not XTTSSpeaker._transformers_patch_applied:
+                        _apply_transformers_compat_patch()
+                        XTTSSpeaker._transformers_patch_applied = True
+
                     if not XTTSSpeaker._torch_patch_applied:
                         _orig = torch.load
 
@@ -284,7 +314,7 @@ class XTTSSpeaker:
                         torch.load = _patched
                         XTTSSpeaker._torch_patch_applied = True
 
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                    device = _best_torch_device()
                     XTTSSpeaker._shared_tts = CoquiTTS(model_name=XTTS_MODEL).to(device)
                     XTTSSpeaker._shared_device = device
                     logger.info("[XTTS] Shared model loaded on %s", device)

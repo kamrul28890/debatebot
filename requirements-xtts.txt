@@ -2,6 +2,7 @@
 TTS==0.22.0
 torch>=2.2,<2.11
 torchaudio>=2.2,<2.11
+transformers>=4.41,<4.50
 numpy==1.22.0; python_version <= "3.10"
 numpy>=1.24.3,<3; python_version > "3.10"
 librosa>=0.10,<1

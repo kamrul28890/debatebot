@@ -24,7 +24,7 @@ rag = [
 ]
 qwen = [
   "torch>=2.2,<2.11",
-  "transformers>=4.41,<5",
+  "transformers>=4.41,<4.50",
   "peft>=0.10,<1",
   "accelerate>=0.28,<2",
   "datasets>=2.18,<5",
@@ -35,6 +35,7 @@ xtts = [
   "TTS==0.22.0",
   "torch>=2.2,<2.11",
   "torchaudio>=2.2,<2.11",
+  "transformers>=4.41,<4.50",
   "numpy==1.22.0; python_version <= '3.10'",
   "numpy>=1.24.3,<3; python_version > '3.10'",
   "librosa>=0.10,<1",
@@ -47,7 +48,7 @@ dev = [
 full = [
   "sentence-transformers>=3.0,<4",
   "torch>=2.2,<2.11",
-  "transformers>=4.41,<5",
+  "transformers>=4.41,<4.50",
   "peft>=0.10,<1",
   "accelerate>=0.28,<2",
   "datasets>=2.18,<5",
@@ -55,6 +56,7 @@ full = [
   "huggingface_hub>=0.23,<1",
   "TTS==0.22.0",
   "torchaudio>=2.2,<2.11",
+  "transformers>=4.41,<4.50",
   "numpy==1.22.0; python_version <= '3.10'",
   "numpy>=1.24.3,<3; python_version > '3.10'",
   "librosa>=0.10,<1",

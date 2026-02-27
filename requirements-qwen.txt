@@ -1,6 +1,6 @@
 # Optional: local Qwen inference + LoRA fine-tuning
 torch>=2.2,<2.11
-transformers>=4.41,<5
+transformers>=4.41,<4.50
 peft>=0.10,<1
 accelerate>=0.28,<2
 datasets>=2.18,<5
