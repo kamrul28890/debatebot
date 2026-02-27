@@ -10,6 +10,8 @@ def test_core_files_exist() -> None:
         ROOT / "src" / "brain" / "model.py",
         ROOT / "scripts" / "doctor.py",
         ROOT / "scripts" / "finetune_qwen.py",
+        ROOT / "scripts" / "setup_selected_mode.py",
+        ROOT / "scripts" / "prepare_debate_cache.py",
         ROOT / "requirements.txt",
         ROOT / "requirements-qwen.txt",
         ROOT / "requirements-xtts.txt",
@@ -23,4 +25,3 @@ def test_persona_prompts_exist() -> None:
     for persona in ("trump", "biden"):
         prompt_file = ROOT / "src" / "brain" / "personas" / f"{persona}.txt"
         assert prompt_file.exists(), f"Missing persona prompt: {prompt_file.relative_to(ROOT)}"
-

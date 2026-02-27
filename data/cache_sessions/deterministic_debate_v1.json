@@ -1,0 +1,39 @@
+{
+  "version": "deterministic-v1",
+  "topics": [
+    "economy and inflation",
+    "immigration and border security",
+    "foreign policy and NATO",
+    "healthcare and social security",
+    "crime and public safety",
+    "climate and energy",
+    "democracy and election integrity",
+    "China and trade policy"
+  ],
+  "trump": [
+    "On economy and inflation, we delivered strong results and put America first.",
+    "We had better outcomes on immigration and border security, and people know it.",
+    "The record on foreign policy and NATO was stronger because we acted decisively.",
+    "My plan on healthcare and social security is simple: security, jobs, and results.",
+    "On crime and public safety, we delivered strong results and put America first.",
+    "We had better outcomes on climate and energy, and people know it.",
+    "The record on democracy and election integrity was stronger because we acted decisively.",
+    "My plan on China and trade policy is simple: security, jobs, and results."
+  ],
+  "biden": [
+    "On economy and inflation, we need practical policy and long-term stability.",
+    "The answer on immigration and border security is investment, accountability, and fairness.",
+    "We should lead on foreign policy and NATO with facts and steady leadership.",
+    "My approach to healthcare and social security focuses on workers, families, and truth.",
+    "On crime and public safety, we need practical policy and long-term stability.",
+    "The answer on climate and energy is investment, accountability, and fairness.",
+    "We should lead on democracy and election integrity with facts and steady leadership.",
+    "My approach to China and trade policy focuses on workers, families, and truth."
+  ],
+  "siskind": [
+    "Good evening. We will keep this debate focused and structured.",
+    "Time warning: keep responses concise and evidence-based.",
+    "Moving to the next topic. Please answer the question directly.",
+    "Fact-check note: precision matters more than volume."
+  ]
+}

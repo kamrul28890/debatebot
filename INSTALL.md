@@ -2,6 +2,27 @@
 
 This guide is for a clean setup on Windows, macOS, or Linux.
 
+## 0. One-command setup for first-time users (recommended)
+
+Pick a module combo and run:
+Run this after creating and activating your virtual environment.
+
+```bash
+python scripts/setup_selected_mode.py --persona trump --combo azure_robotic
+```
+
+Combo choices:
+- `azure_robotic`
+- `qwen_robotic`
+- `azure_cloned`
+- `qwen_cloned`
+
+For dual-laptop full local demo:
+```bash
+python scripts/setup_selected_mode.py --persona trump --combo qwen_cloned
+python scripts/setup_selected_mode.py --persona biden --combo qwen_cloned
+```
+
 ## 1. Python Version
 
 Use Python 3.10.x.
@@ -95,6 +116,12 @@ PERSONA=trump python src/main.py
 
 Run another terminal with `PERSONA=biden`.
 
+GUI-first setup option:
+- Launch `python src/main.py`
+- In selector, choose module/persona
+- Click `Auto Setup (<Selected Module>)`
+- Watch progress in the right panel (non-blocking background task)
+
 ## 8. Qwen setup (optional)
 
 1. Place:
@@ -118,3 +145,6 @@ Run another terminal with `PERSONA=biden`.
   - Install `requirements-xtts.txt` and rerun doctor.
 - Qwen missing:
   - Install `requirements-qwen.txt` and ensure local adapters or HF token.
+- Two laptops out of sync in cached mode:
+  - Compare `Session sync fingerprint` shown in selector status.
+  - If mismatched, run `scripts/prepare_debate_cache.py --force` on both machines.

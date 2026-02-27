@@ -16,11 +16,35 @@ AI presidential debate simulator with selectable brain and voice backends:
 - Qwen tooling:
   - `scripts/prepare_dataset.py`
   - `scripts/finetune_qwen.py`
+  - `scripts/setup_selected_mode.py`
+  - `scripts/prepare_debate_cache.py`
+  - `scripts/download_sounds.py`
   - `scripts/test_qwen_integration.py`
   - `scripts/upload_to_huggingface.py`
   - `scripts/doctor.py`
 
 ## Installation
+
+### 0. Fastest First-Time Setup (Recommended)
+
+If you want a single command that installs dependencies, prepares cache, and validates a selected module:
+Run this after creating and activating your virtual environment.
+
+```bash
+python scripts/setup_selected_mode.py --persona trump --combo azure_robotic
+```
+
+Other combos:
+- `azure_robotic`
+- `qwen_robotic`
+- `azure_cloned`
+- `qwen_cloned`
+
+Examples:
+```bash
+python scripts/setup_selected_mode.py --persona trump --combo qwen_cloned
+python scripts/setup_selected_mode.py --persona biden --combo qwen_cloned
+```
 
 ### 1. Create a virtual environment
 
@@ -65,6 +89,11 @@ python -m pip check
 python scripts/doctor.py
 ```
 
+To automatically fetch crowd reaction SFX:
+```bash
+python scripts/download_sounds.py
+```
+
 For full local stack validation:
 ```bash
 python scripts/doctor.py --rag --qwen --xtts
@@ -79,6 +108,10 @@ Preferred: environment variables
 - `AZURE_OPENAI_DEPLOYMENT`
 - `AZURE_SPEECH_KEY`
 - `AZURE_SPEECH_REGION`
+- Optional voice overrides:
+  - `AZURE_TTS_VOICE_TRUMP`
+  - `AZURE_TTS_VOICE_BIDEN`
+  - `AZURE_TTS_VOICE_SISKIND`
 
 Fallback:
 ```bash
@@ -104,6 +137,36 @@ Start a second instance with `PERSONA=biden`.
 At startup, choose:
 - Brain: `azure` or `qwen`
 - Voice: `azure` or `xtts`
+
+Setup from GUI:
+- Click `Auto Setup (<Selected Module>)` in the selector for one-click setup.
+- Use `Prepare Cache (<Selected Module>)` to prebuild deterministic + XTTS assets in background with progress.
+
+## Two-Laptop Cached Debate (Recommended for Demo)
+
+For smooth synchronized debates:
+
+1. On Trump laptop:
+```bash
+python scripts/setup_selected_mode.py --persona trump --combo qwen_cloned
+```
+
+2. On Biden laptop:
+```bash
+python scripts/setup_selected_mode.py --persona biden --combo qwen_cloned
+```
+
+3. On both laptops, confirm same cache sync fingerprint:
+- In selector status panel: `Session sync fingerprint: <hash>`
+- In runtime ticker (cached mode): `CACHE: session sync fingerprint <hash>`
+
+4. Start both in `Cached` mode.
+
+If fingerprints differ, rebuild cache on both laptops with:
+```bash
+python scripts/prepare_debate_cache.py --persona trump --voice xtts --force
+python scripts/prepare_debate_cache.py --persona biden --voice xtts --force
+```
 
 ## Qwen Fine-Tuning Workflow
 

@@ -1,11 +1,11 @@
-"""
+﻿"""
 src/audio/xtts_speaker.py
 
 XTTS v2 voice cloning engine with pre-generation cache.
 
 Two modes:
-  1. pregenerate(texts, persona) — run OFFLINE before demo to cache WAV files
-  2. speak(text, persona) — during demo, plays cached WAV (zero latency)
+  1. pregenerate(texts, persona) â€” run OFFLINE before demo to cache WAV files
+  2. speak(text, persona) â€” during demo, plays cached WAV (zero latency)
                             falls back to live synthesis if not cached
                             falls back to Azure TTS if XTTS unavailable
 
@@ -23,8 +23,9 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-# ── XTTS availability check ────────────────────────────────────────────────────
+# â”€â”€ XTTS availability check â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 XTTS_AVAILABLE = False
+XTTS_IMPORT_ERROR = ""
 try:
     import torch
     import torchaudio
@@ -44,11 +45,13 @@ try:
 
     torchaudio.load = _safe_load_wav
     XTTS_AVAILABLE = True
-except ImportError as e:
-    pass  # Graceful degradation — Azure TTS will be used instead
+except Exception as e:
+    XTTS_IMPORT_ERROR = str(e)
+    logger.debug("[XTTS] Optional local runtime unavailable. Azure fallback remains active.")
+    logger.debug("[XTTS] Runtime import detail: %s", e)
 
 
-# ── Cache config ───────────────────────────────────────────────────────────────
+# â”€â”€ Cache config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 BASE_DIR   = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 CACHE_DIR  = os.path.join(BASE_DIR, "data", "xtts_cache")
 XTTS_MODEL = "tts_models/multilingual/multi-dataset/xtts_v2"
@@ -79,7 +82,7 @@ def _ref_wav(persona: str) -> str:
     return os.path.join(BASE_DIR, "data", f"raw_{persona}", "ref.wav")
 
 
-# ── XTTSSpeaker ────────────────────────────────────────────────────────────────
+# â”€â”€ XTTSSpeaker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class XTTSSpeaker:
     """
@@ -94,15 +97,21 @@ class XTTSSpeaker:
         speaker.pregenerate(["line 1", "line 2", ...])
     """
 
+    _shared_tts = None
+    _shared_device = None
+    _shared_lock = threading.Lock()
+    _torch_patch_applied = False
+
     def __init__(self, persona: str):
         self.persona = persona
         self._tts = None
         self._latents = {}
         self._ready = False
+        self._stop_requested = False
         os.makedirs(os.path.join(CACHE_DIR, persona), exist_ok=True)
 
         if not XTTS_AVAILABLE:
-            logger.warning("[XTTS] Runtime unavailable - install: pip install TTS torch torchaudio")
+            logger.info("[XTTS] Local runtime unavailable. Use Azure voice or install XTTS dependencies.")
             return
 
         self._load_model()
@@ -117,6 +126,7 @@ class XTTSSpeaker:
         text = (text or "").strip()
         if not text:
             return False
+        self._stop_requested = False
 
         full_cache = _cache_path(self.persona, text)
 
@@ -135,6 +145,9 @@ class XTTSSpeaker:
             logger.info("[XTTS] Chunking long text into %s segments", len(chunks))
 
         for idx, chunk in enumerate(chunks, start=1):
+            if self._stop_requested:
+                logger.info("[XTTS] Stop requested before chunk %s/%s", idx, len(chunks))
+                return False
             chunk_cache = _cache_path(self.persona, chunk)
             if os.path.exists(chunk_cache):
                 logger.debug("[XTTS] Chunk %s/%s cache hit", idx, len(chunks))
@@ -149,10 +162,33 @@ class XTTSSpeaker:
                 logger.error("[XTTS] Synthesis error on chunk %s: %s", idx, e)
                 return False
 
+            if self._stop_requested:
+                logger.info("[XTTS] Stop requested after synthesis %s/%s", idx, len(chunks))
+                return False
+
             if not self._play_wav(chunk_cache):
                 return False
 
         return True
+
+    def stop(self) -> None:
+        """Best-effort stop for ongoing XTTS playback."""
+        self._stop_requested = True
+
+        # Stop pygame playback when available.
+        try:
+            import pygame
+            if pygame.mixer.get_init():
+                pygame.mixer.stop()
+        except Exception:
+            pass
+
+        # Stop winsound playback on Windows.
+        try:
+            import winsound
+            winsound.PlaySound(None, winsound.SND_PURGE)
+        except Exception:
+            pass
 
     @staticmethod
     def _split_text_for_synthesis(text: str, max_chars: int = 80) -> list[str]:
@@ -175,10 +211,13 @@ class XTTSSpeaker:
                         chunks.append(piece)
         return chunks if chunks else [text]
 
-    def pregenerate(self, texts: list, show_progress: bool = True):
+    def pregenerate(self, texts: list, show_progress: bool = True, progress_callback=None):
         """
         Pre-generate WAV files for a list of texts.
         Run this offline before the demo.
+
+        progress_callback signature:
+            callback(index, total, text, done, skipped)
         """
         if not self._ready:
             logger.warning("[XTTS] Cannot pre-generate - model not loaded")
@@ -191,6 +230,11 @@ class XTTSSpeaker:
             cache = _cache_path(self.persona, text)
             if os.path.exists(cache):
                 skipped += 1
+                if progress_callback:
+                    try:
+                        progress_callback(i + 1, len(texts), text, done, skipped)
+                    except Exception:
+                        pass
                 continue
 
             if show_progress:
@@ -201,6 +245,12 @@ class XTTSSpeaker:
                 done += 1
             except Exception as e:
                 logger.warning("[XTTS] Pre-generation failed: %s", e)
+
+            if progress_callback:
+                try:
+                    progress_callback(i + 1, len(texts), text, done, skipped)
+                except Exception:
+                    pass
 
         logger.info("[XTTS] Pre-generation done: %s new files, %s already cached", done, skipped)
         logger.info("[XTTS] Cache dir: %s", os.path.join(CACHE_DIR, self.persona))
@@ -215,21 +265,33 @@ class XTTSSpeaker:
     def is_cached(self, text: str) -> bool:
         return os.path.exists(_cache_path(self.persona, text))
 
-    # ── Internal ───────────────────────────────────────────────────────────────
+    # â”€â”€ Internal â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _load_model(self):
-        logger.info("[XTTS] Loading model (%s)... (first run downloads ~1.5GB)", XTTS_MODEL)
+        logger.info("[XTTS] Preparing model (%s)...", XTTS_MODEL)
         try:
-            # Compatibility patch for newer PyTorch
-            _orig = torch.load
-            def _patched(*args, **kwargs):
-                kwargs.setdefault("weights_only", False)
-                return _orig(*args, **kwargs)
-            torch.load = _patched
+            with XTTSSpeaker._shared_lock:
+                if XTTSSpeaker._shared_tts is None:
+                    logger.info("[XTTS] Loading shared model (first run may download ~1.5GB)")
 
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            self._tts = CoquiTTS(model_name=XTTS_MODEL).to(device)
-            logger.info("[XTTS] Model loaded on %s", device)
+                    if not XTTSSpeaker._torch_patch_applied:
+                        _orig = torch.load
+
+                        def _patched(*args, **kwargs):
+                            kwargs.setdefault("weights_only", False)
+                            return _orig(*args, **kwargs)
+
+                        torch.load = _patched
+                        XTTSSpeaker._torch_patch_applied = True
+
+                    device = "cuda" if torch.cuda.is_available() else "cpu"
+                    XTTSSpeaker._shared_tts = CoquiTTS(model_name=XTTS_MODEL).to(device)
+                    XTTSSpeaker._shared_device = device
+                    logger.info("[XTTS] Shared model loaded on %s", device)
+                else:
+                    logger.info("[XTTS] Reusing shared model on %s", XTTSSpeaker._shared_device)
+
+            self._tts = XTTSSpeaker._shared_tts
 
             # Pre-compute voice latents from ref.wav
             ref = _ref_wav(self.persona)
@@ -278,7 +340,7 @@ class XTTSSpeaker:
 
     @staticmethod
     def _play_wav(path: str) -> bool:
-        """Play a WAV file — cross-platform (Mac, Windows, Linux)."""
+        """Play a WAV file â€” cross-platform (Mac, Windows, Linux)."""
         from src.utils.platform import play_wav_blocking
         success = play_wav_blocking(path)
         if not success:
@@ -286,7 +348,7 @@ class XTTSSpeaker:
         return success
 
 
-# ── DualSpeaker: XTTS with Azure fallback ─────────────────────────────────────
+# â”€â”€ DualSpeaker: XTTS with Azure fallback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class DualSpeaker:
     """
@@ -314,12 +376,12 @@ class DualSpeaker:
                     cached_files = self.xtts_speaker.cache_size()
                     logger.info("[DualSpeaker:%s] XTTS ready - %s files cached", persona, cached_files)
                 else:
-                    logger.warning("[DualSpeaker:%s] XTTS initialization failed - using Azure TTS", persona)
+                    logger.info("[DualSpeaker:%s] XTTS init failed - using Azure TTS", persona)
                     self.xtts_speaker = None
                     self.mode = "azure"
             else:
-                logger.warning(
-                    "[DualSpeaker:%s] XTTS unavailable (install: pip install TTS torch torchaudio) - using Azure TTS",
+                logger.info(
+                    "[DualSpeaker:%s] XTTS unavailable - using Azure TTS",
                     persona,
                 )
                 self.mode = "azure"
@@ -337,6 +399,19 @@ class DualSpeaker:
         logger.info("[DualSpeaker:%s] backend=AZURE", self.persona)
         self.azure_speaker.speak(text)
 
+    def stop(self) -> None:
+        """Stop any ongoing speech output."""
+        try:
+            self.azure_speaker.stop()
+        except Exception:
+            pass
+
+        if self.xtts_speaker is not None:
+            try:
+                self.xtts_speaker.stop()
+            except Exception:
+                pass
+
     def estimate_cache_coverage(self, texts: list) -> float:
         """What fraction of texts are already cached?"""
         if self.xtts_speaker is None:
@@ -345,22 +420,12 @@ class DualSpeaker:
         return cached / len(texts) if texts else 0.0
 
 
-# ── CLI for pre-generation ─────────────────────────────────────────────────────
+# â”€â”€ CLI for pre-generation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="XTTS pre-generation tool")
-    parser.add_argument("--pregenerate", metavar="PERSONA",
-                        help="Pre-generate audio for a persona (trump or biden)")
-    parser.add_argument("--test", metavar="PERSONA",
-                        help="Test XTTS with a sample line")
-    args = parser.parse_args()
-
-    if args.pregenerate:
-        persona = args.pregenerate
-        # Load common debate lines to pre-generate
-        common_lines = [
-            # Trump
+    def _pregenerate_lines(persona: str) -> list[str]:
+        trump_lines = [
             "Nobody builds walls better than me, believe me.",
             "We had the greatest economy in the history of our country.",
             "It's a disaster. A total disaster.",
@@ -369,20 +434,57 @@ if __name__ == "__main__":
             "We're going to win so much, you're going to be so sick and tired of winning.",
             "The border is a catastrophe. A total catastrophe.",
             "China is ripping us off. They've been doing it for years.",
-            # Biden
+        ]
+        biden_lines = [
             "Look, here's the deal.",
             "Not a joke. I'm being serious.",
             "C'mon, man. That's just not true.",
             "My dad used to say: a job is about a lot more than a paycheck.",
             "We're going to build this country back better.",
             "No malarkey. That's my promise.",
-            "Here's what I'll do — I'll tell you the truth.",
+            "Here's what I'll do - I'll tell you the truth.",
             "The middle class built this country. Not the wealthy.",
         ]
+        siskind_lines = [
+            "Good evening. I'm Professor Jeffrey Siskind from Purdue University's ECE department. Let's begin.",
+            "Our first topic tonight is the economy and inflation. Mr. Trump, you have 30 seconds.",
+            "Moving on - we'll discuss immigration and border security. Mr. Biden, your response.",
+            "Next topic: foreign policy and America's role in NATO. Mr. Trump.",
+            "Gentlemen, we turn to healthcare and social security. Mr. Biden.",
+            "Our next topic is crime and public safety. I expect coherent responses. Mr. Trump.",
+            "We'll now discuss climate change and energy policy. Mr. Biden.",
+            "The topic is democracy and election integrity. Mr. Trump.",
+            "Final topic: U.S.-China relations and trade. Mr. Biden, you may begin.",
+            "Fifteen seconds remaining, gentlemen.",
+            "Time, please. Wrap up your thought.",
+            "That's time. We're moving on whether you're finished or not.",
+            "Gentlemen. Gentlemen. This is not helpful.",
+            "One at a time. This is a debate, not a neural network diverging.",
+            "As I said in lecture - structure matters. Please use some.",
+        ]
 
+        if persona == "trump":
+            return trump_lines
+        if persona == "biden":
+            return biden_lines
+        if persona == "siskind":
+            return siskind_lines
+        return trump_lines + biden_lines
+
+    parser = argparse.ArgumentParser(description="XTTS pre-generation tool")
+    parser.add_argument(
+        "--pregenerate",
+        metavar="PERSONA",
+        help="Pre-generate audio for a persona (trump, biden, or siskind)",
+    )
+    parser.add_argument("--test", metavar="PERSONA", help="Test XTTS with a sample line")
+    args = parser.parse_args()
+
+    if args.pregenerate:
+        persona = args.pregenerate
         speaker = XTTSSpeaker(persona)
         if speaker._ready:
-            speaker.pregenerate(common_lines)
+            speaker.pregenerate(_pregenerate_lines(persona))
         else:
             print(f"XTTS not ready for {persona}")
 
@@ -390,13 +492,12 @@ if __name__ == "__main__":
         persona = args.test
         test_lines = {
             "trump": "Nobody builds debate systems better than us. It's true.",
-            "biden": "Look folks, here's the deal — this voice sounds pretty good. Not a joke.",
+            "biden": "Look folks, here's the deal - this voice sounds pretty good. Not a joke.",
+            "siskind": "Gentlemen, please. Let's keep this debate on track.",
         }
         speaker = XTTSSpeaker(persona)
         if speaker._ready:
             print(f"Testing {persona}...")
             speaker.speak(test_lines.get(persona, "Hello from the debate stage."))
         else:
-            print(f"XTTS not ready. Check: pip install TTS torch torchaudio")
-
-
+            print("XTTS not ready. Check: pip install TTS torch torchaudio")

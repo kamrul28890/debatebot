@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Project preflight diagnostics.
+Comprehensive environment diagnostics for Debate Night.
 
 Examples:
   python scripts/doctor.py
@@ -11,11 +11,16 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib
+import json
 import os
 import platform
+import subprocess
 import sys
 from pathlib import Path
+
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -38,12 +43,39 @@ class DoctorReport:
         print(f"[OK]    {msg}")
 
 
-def can_import(module_name: str) -> bool:
+def can_import(module_name: str) -> tuple[bool, str]:
     try:
         importlib.import_module(module_name)
-        return True
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def run_probe(code: str, timeout_sec: int = 45) -> tuple[bool, dict]:
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-c", code],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+    except Exception as exc:
+        return False, {"error": f"probe execution failed: {exc}"}
+
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        return False, {"error": detail or f"probe exited with code {completed.returncode}"}
+
+    lines = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
+    if not lines:
+        return False, {"error": "probe produced no output"}
+
+    try:
+        payload = json.loads(lines[-1])
     except Exception:
-        return False
+        return False, {"error": f"invalid probe output: {lines[-1]}"}
+    return True, payload
 
 
 def check_python(report: DoctorReport) -> None:
@@ -58,6 +90,9 @@ def check_paths(report: DoctorReport) -> None:
         ROOT / "src" / "main.py",
         ROOT / "src" / "brain" / "model.py",
         ROOT / "scripts" / "finetune_qwen.py",
+        ROOT / "scripts" / "build_local_mode.py",
+        ROOT / "scripts" / "prepare_debate_cache.py",
+        ROOT / "scripts" / "setup_selected_mode.py",
         ROOT / "keys_template.py",
     ]
     for path in required:
@@ -67,41 +102,14 @@ def check_paths(report: DoctorReport) -> None:
             report.error(f"Missing required path: {path.relative_to(ROOT)}")
 
 
-def check_imports(report: DoctorReport, rag: bool, qwen: bool, xtts: bool) -> None:
-    core = [
-        "openai",
-        "azure.cognitiveservices.speech",
-        "PyQt6",
-        "requests",
-        "bs4",
-        "pygame",
-    ]
-    for mod in core:
-        if can_import(mod):
+def check_import_group(report: DoctorReport, modules: list[str], hint: str = "") -> None:
+    for mod in modules:
+        ok, detail = can_import(mod)
+        if ok:
             report.ok(f"Import OK: {mod}")
         else:
-            report.error(f"Import failed: {mod}")
-
-    if rag:
-        for mod in ["numpy", "sentence_transformers"]:
-            if can_import(mod):
-                report.ok(f"Import OK: {mod}")
-            else:
-                report.error(f"Import failed: {mod} (install requirements-rag.txt)")
-
-    if qwen:
-        for mod in ["torch", "transformers", "peft", "datasets", "accelerate", "huggingface_hub"]:
-            if can_import(mod):
-                report.ok(f"Import OK: {mod}")
-            else:
-                report.error(f"Import failed: {mod} (install requirements-qwen.txt)")
-
-    if xtts:
-        for mod in ["numpy", "TTS", "torchaudio", "soundfile"]:
-            if can_import(mod):
-                report.ok(f"Import OK: {mod}")
-            else:
-                report.error(f"Import failed: {mod} (install requirements-xtts.txt)")
+            suffix = f" ({hint})" if hint else ""
+            report.error(f"Import failed: {mod}{suffix} -> {detail}")
 
 
 def check_credentials(report: DoctorReport, ci_mode: bool) -> None:
@@ -138,34 +146,182 @@ def check_credentials(report: DoctorReport, ci_mode: bool) -> None:
     else:
         report.ok("keys.py exists (local credential source)")
 
+    for env_name in ("AZURE_TTS_VOICE_TRUMP", "AZURE_TTS_VOICE_BIDEN", "AZURE_TTS_VOICE_SISKIND"):
+        if os.getenv(env_name):
+            report.ok(f"Azure TTS override detected: {env_name}")
 
-def check_assets(report: DoctorReport, xtts: bool) -> None:
+
+def check_persona_assets(report: DoctorReport, xtts_enabled: bool) -> None:
     personas = ["trump", "biden", "siskind"]
     for persona in personas:
-        ref = ROOT / "data" / f"raw_{persona}" / "ref.wav"
+        base = ROOT / "data" / f"raw_{persona}"
+        ref = base / "ref.wav"
+        idle = base / "idle.png"
+        talking = base / "talking.png"
+        listening = base / "listening.png"
+
         if ref.exists():
-            report.ok(f"Voice reference present: data/raw_{persona}/ref.wav")
+            report.ok(f"Voice reference present: {ref.relative_to(ROOT)}")
         else:
-            if xtts:
-                report.error(f"Missing ref.wav for {persona}: {ref.relative_to(ROOT)}")
+            if xtts_enabled:
+                report.error(f"Missing ref.wav: {ref.relative_to(ROOT)}")
             else:
-                report.warn(f"Missing ref.wav for {persona}: {ref.relative_to(ROOT)}")
+                report.warn(f"Missing ref.wav: {ref.relative_to(ROOT)}")
+
+        for img in (idle, talking, listening):
+            if not img.exists():
+                report.warn(f"Missing avatar image: {img.relative_to(ROOT)}")
 
 
-def check_qwen_paths(report: DoctorReport, qwen: bool) -> None:
-    if not qwen:
+def check_crowd_sounds(report: DoctorReport) -> None:
+    sounds = [
+        "applause",
+        "laugh",
+        "boo",
+        "buzzer",
+        "ding",
+        "fanfare",
+        "crickets",
+        "drumroll",
+    ]
+    exts = (".wav", ".ogg", ".oga", ".mp3")
+    sound_dir = ROOT / "data" / "crowd_sounds"
+    missing = []
+    for stem in sounds:
+        if not any((sound_dir / f"{stem}{ext}").exists() for ext in exts):
+            missing.append(stem)
+    if not missing:
+        report.ok("Crowd sounds present")
         return
-    local_trump = ROOT / "data" / "models" / "qwen-2.5-0.5b-finetuned-trump"
-    local_biden = ROOT / "data" / "models" / "qwen-2.5-0.5b-finetuned-biden"
-    has_local = local_trump.exists() and local_biden.exists()
-    has_hf_token = bool(os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN"))
+    report.warn("Missing crowd sounds: " + ", ".join(missing))
 
-    if has_local:
-        report.ok("Local Qwen adapters found for trump and biden")
-    elif has_hf_token:
-        report.warn("No local Qwen adapters found; HF token present for hub fallback")
+
+def check_rag_assets(report: DoctorReport) -> None:
+    for persona in ("trump", "biden"):
+        speech_file = ROOT / "data" / f"raw_{persona}" / "speeches.txt"
+        if speech_file.exists():
+            report.ok(f"RAG source present: {speech_file.relative_to(ROOT)}")
+        else:
+            report.warn(f"RAG source missing: {speech_file.relative_to(ROOT)}")
+
+
+def check_qwen_assets(report: DoctorReport) -> None:
+    hf_token = bool(os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN"))
+
+    for persona in ("trump", "biden"):
+        adapter_dir = ROOT / "data" / "models" / f"qwen-2.5-0.5b-finetuned-{persona}"
+        dataset = ROOT / "data" / f"{persona}_train.jsonl"
+        if dataset.exists():
+            report.ok(f"Qwen dataset present: {dataset.relative_to(ROOT)}")
+        else:
+            report.warn(f"Qwen dataset missing: {dataset.relative_to(ROOT)}")
+
+        if not adapter_dir.exists():
+            if hf_token:
+                report.warn(f"Qwen adapter missing for {persona}, but HF token fallback is available")
+            else:
+                report.error(f"Qwen adapter missing for {persona}: {adapter_dir.relative_to(ROOT)}")
+            continue
+
+        required = ["adapter_config.json"]
+        optional_weights = ["adapter_model.safetensors", "adapter_model.bin"]
+        missing_required = [name for name in required if not (adapter_dir / name).exists()]
+        has_weights = any((adapter_dir / name).exists() for name in optional_weights)
+
+        if missing_required:
+            report.error(
+                f"Qwen adapter incomplete for {persona}; missing: {', '.join(missing_required)}"
+            )
+        elif not has_weights:
+            report.error(
+                f"Qwen adapter incomplete for {persona}; missing adapter weights (.safetensors/.bin)"
+            )
+        else:
+            report.ok(f"Qwen adapter ready: {adapter_dir.relative_to(ROOT)}")
+
+
+def check_deterministic_cache_script(report: DoctorReport) -> None:
+    path = ROOT / "data" / "cache_sessions" / "deterministic_debate_v2.json"
+    if not path.exists():
+        report.warn(f"Deterministic cache script missing: {path.relative_to(ROOT)}")
+        return
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        report.error(f"Deterministic cache script unreadable: {exc}")
+        return
+
+    script_version = payload.get("version", "unknown")
+    trump_lines = len(payload.get("trump", []))
+    biden_lines = len(payload.get("biden", []))
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    fingerprint = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
+    report.ok(
+        f"Deterministic cache script ready ({script_version}) | turns: trump={trump_lines}, "
+        f"biden={biden_lines} | sync fingerprint={fingerprint}"
+    )
+
+
+def check_xtts_cache(report: DoctorReport) -> None:
+    cache_root = ROOT / "data" / "xtts_cache"
+    for persona in ("trump", "biden", "siskind"):
+        p = cache_root / persona
+        count = len(list(p.glob("*.wav"))) if p.is_dir() else 0
+        if count > 0:
+            report.ok(f"XTTS cache ready for {persona}: {count} wav files")
+        else:
+            report.warn(f"XTTS cache empty for {persona}: {p.relative_to(ROOT)}")
+
+
+def check_qwen_runtime(report: DoctorReport) -> None:
+    code = (
+        "import json\n"
+        "payload={'ready': False, 'error': ''}\n"
+        "try:\n"
+        "    import torch\n"
+        "    from PyQt6.QtWidgets import QApplication\n"
+        "    import transformers\n"
+        "    import peft\n"
+        "    import src.brain.qwen_brain\n"
+        "    payload['ready'] = True\n"
+        "except Exception as exc:\n"
+        "    payload['error'] = str(exc)\n"
+        "print(json.dumps(payload))\n"
+    )
+    ok, payload = run_probe(code)
+    if not ok:
+        report.error(f"Qwen runtime probe failed: {payload.get('error', 'unknown error')}")
+        return
+    if payload.get("ready"):
+        report.ok("Qwen runtime probe passed")
     else:
-        report.warn("No local Qwen adapters and no HF token found")
+        report.error(f"Qwen runtime unavailable: {payload.get('error', 'unknown error')}")
+
+
+def check_xtts_runtime(report: DoctorReport) -> None:
+    code = (
+        "import json\n"
+        "payload={'ready': False, 'error': ''}\n"
+        "try:\n"
+        "    import torch\n"
+        "    from PyQt6.QtWidgets import QApplication\n"
+        "    from src.audio import xtts_speaker as m\n"
+        "    payload['ready'] = bool(getattr(m, 'XTTS_AVAILABLE', False))\n"
+        "    payload['error'] = str(getattr(m, 'XTTS_IMPORT_ERROR', '') or '')\n"
+        "except Exception as exc:\n"
+        "    payload['error'] = str(exc)\n"
+        "print(json.dumps(payload))\n"
+    )
+    ok, payload = run_probe(code)
+    if not ok:
+        report.error(f"XTTS runtime probe failed: {payload.get('error', 'unknown error')}")
+        return
+    if payload.get("ready"):
+        report.ok("XTTS runtime probe passed")
+    else:
+        detail = payload.get("error", "") or "XTTS runtime unavailable"
+        report.error(f"XTTS runtime unavailable: {detail}")
 
 
 def parse_args() -> argparse.Namespace:
@@ -184,10 +340,42 @@ def main() -> int:
 
     check_python(report)
     check_paths(report)
-    check_imports(report, rag=args.rag, qwen=args.qwen, xtts=args.xtts)
     check_credentials(report, ci_mode=args.ci)
-    check_assets(report, xtts=args.xtts)
-    check_qwen_paths(report, qwen=args.qwen)
+    check_persona_assets(report, xtts_enabled=args.xtts)
+    check_crowd_sounds(report)
+    check_deterministic_cache_script(report)
+
+    core_imports = [
+        "openai",
+        "azure.cognitiveservices.speech",
+        "PyQt6",
+        "requests",
+        "bs4",
+        "pygame",
+    ]
+    check_import_group(report, core_imports)
+
+    if args.rag:
+        check_import_group(report, ["numpy", "sentence_transformers"], hint="install requirements-rag.txt")
+        check_rag_assets(report)
+
+    if args.qwen:
+        check_import_group(
+            report,
+            ["torch", "transformers", "peft", "datasets", "accelerate", "huggingface_hub"],
+            hint="install requirements-qwen.txt",
+        )
+        check_qwen_runtime(report)
+        check_qwen_assets(report)
+
+    if args.xtts:
+        check_import_group(
+            report,
+            ["numpy", "TTS", "torchaudio", "soundfile"],
+            hint="install requirements-xtts.txt",
+        )
+        check_xtts_runtime(report)
+        check_xtts_cache(report)
 
     print("")
     print(f"Summary: {len(report.errors)} error(s), {len(report.warnings)} warning(s)")

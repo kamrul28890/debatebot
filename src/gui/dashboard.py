@@ -1,4 +1,4 @@
-"""
+﻿"""
 src/gui/dashboard.py
 
 South Park Parody Presidential Debate GUI.
@@ -22,11 +22,11 @@ from datetime import datetime
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QLabel, QHBoxLayout, QVBoxLayout,
-    QGraphicsDropShadowEffect, QFrame, QSizePolicy
+    QGraphicsDropShadowEffect, QFrame, QSizePolicy, QPushButton
 )
 from PyQt6.QtGui import (
     QPixmap, QFont, QColor, QPainter, QPen, QBrush,
-    QLinearGradient, QPalette, QFontDatabase
+    QLinearGradient, QPalette, QFontDatabase, QFontMetrics
 )
 from PyQt6.QtCore import Qt, QTimer, QPropertyAnimation, QRect, pyqtSignal, QThread
 
@@ -34,14 +34,14 @@ from src.utils.platform import impact_font, monospace_font, comic_font, serif_fo
 
 logger = logging.getLogger(__name__)
 
-# ── Resolve fonts once at import time ─────────────────────────────────────────
+# â”€â”€ Resolve fonts once at import time â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 _IMPACT   = impact_font()
 _MONO     = monospace_font()
 _COMIC    = comic_font()
 _SERIF    = serif_font()
 
 
-# ── Color Palette (South Park political parody) ────────────────────────────────
+# â”€â”€ Color Palette (South Park political parody) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 COLORS = {
     "bg":            "#1a0a00",     # dark brown stage
     "stage_floor":   "#2d1a0a",     # wooden stage
@@ -67,7 +67,8 @@ class ScrollingTicker(QLabel):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(36)
+        self.setFixedHeight(28)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setStyleSheet(f"""
             background-color: {COLORS['ticker_bg']};
             color: {COLORS['ticker_text']};
@@ -79,25 +80,29 @@ class ScrollingTicker(QLabel):
         """)
         self.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
         self._messages = [
-            "🏛️ AI PRESIDENTIAL DEBATE 2026  |  PURDUE UNIVERSITY ECE DEPT  |  ",
-            "⚡ POWERED BY GPT-4 & AZURE NEURAL TTS  |  ",
-            "🎓 MODERATED BY PROF. JEFFREY SISKIND  |  ",
-            "📊 FACT-CHECKER ACTIVE  |  ALL CLAIMS VERIFIED IN REAL TIME  |  ",
+            "AI PRESIDENTIAL DEBATE 2026 | PURDUE UNIVERSITY ECE | ",
+            "GPT-4 / QWEN BRAINS AVAILABLE | AZURE / XTTS VOICES AVAILABLE | ",
+            "MODERATOR: PROF. JEFFREY SISKIND | FACT CHECKER ACTIVE | ",
         ]
-        self._scroll_text = "  " + "  ★  ".join(self._messages) * 3
+        self._scroll_text = "  " + "  |  ".join(self._messages) * 3
         self._pos = 0
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._scroll)
         self._timer.start(30)
 
     def add_message(self, text: str):
-        self._scroll_text += f"  ●  {text.upper()}"
+        self._scroll_text += f"  -  {text.upper()}"
 
     def _scroll(self):
         self._pos = (self._pos + 2) % (len(self._scroll_text) * 8)
         # Use character clipping for scroll effect
         char_pos = self._pos // 8
-        display = self._scroll_text[char_pos:char_pos + 80]
+        metrics = QFontMetrics(self.font())
+        avg_char_width = max(1, metrics.horizontalAdvance("A"))
+        visible_chars = max(50, int(self.width() / avg_char_width) + 8)
+        display = self._scroll_text[char_pos:char_pos + visible_chars]
+        if len(display) < visible_chars:
+            display += self._scroll_text[: visible_chars - len(display)]
         self.setText(display)
 
 
@@ -105,10 +110,10 @@ class StatusPill(QLabel):
     """Animated status pill showing LISTENING / THINKING / SPEAKING."""
 
     STATES = {
-        "idle":      ("#333333", "⏸  STANDBY"),
-        "listening": ("#00aa55", "🎤  LISTENING"),
-        "thinking":  ("#cc8800", "🧠  THINKING..."),
-        "speaking":  ("#cc2200", "🗣️  SPEAKING"),
+        "idle": ("#333333", "STANDBY"),
+        "listening": ("#00aa55", "LISTENING"),
+        "thinking": ("#cc8800", "THINKING"),
+        "speaking": ("#cc2200", "SPEAKING"),
     }
 
     def __init__(self, parent=None):
@@ -171,13 +176,13 @@ class CandidatePanel(QFrame):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(6)
 
-        # ── Name banner ────────────────────────────────────────────────────────
+        # â”€â”€ Name banner â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         name_label = QLabel(name.upper())
         name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         name_label.setStyleSheet(f"""
             background-color: {color};
             color: white;
-            font-size: 18px;
+            font-size: 14px;
             font-weight: 900;
             font-family: {_IMPACT};
             padding: 6px;
@@ -186,14 +191,14 @@ class CandidatePanel(QFrame):
         """)
         layout.addWidget(name_label)
 
-        # ── Avatar image ───────────────────────────────────────────────────────
+        # â”€â”€ Avatar image â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self.avatar = QLabel()
         self.avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.avatar.setMinimumHeight(280)
+        self.avatar.setMinimumHeight(150)
         self.avatar.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.avatar)
 
-        # ── Speech bubble ──────────────────────────────────────────────────────
+        # â”€â”€ Speech bubble â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self.speech_bubble = QLabel("...")
         self.speech_bubble.setWordWrap(True)
         self.speech_bubble.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -210,7 +215,7 @@ class CandidatePanel(QFrame):
         """)
         layout.addWidget(self.speech_bubble)
 
-        # ── Status pill ────────────────────────────────────────────────────────
+        # â”€â”€ Status pill â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         status_row = QHBoxLayout()
         status_row.addStretch()
         self.status_pill = StatusPill()
@@ -218,7 +223,7 @@ class CandidatePanel(QFrame):
         status_row.addStretch()
         layout.addLayout(status_row)
 
-        # ── Load avatar images ─────────────────────────────────────────────────
+        # â”€â”€ Load avatar images â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         data_dir = os.path.join(base_dir, "data", f"raw_{persona}")
 
@@ -229,7 +234,7 @@ class CandidatePanel(QFrame):
         }
         self.avatar.setPixmap(self._frames["idle"])
 
-        # ── Mouth animation ────────────────────────────────────────────────────
+        # â”€â”€ Mouth animation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self._anim_timer = QTimer(self)
         self._anim_timer.timeout.connect(self._toggle_mouth)
         self._frame_index = 0
@@ -269,12 +274,12 @@ class CandidatePanel(QFrame):
     def _load_pixmap(path: str) -> QPixmap:
         if os.path.exists(path):
             return QPixmap(path).scaled(
-                260, 280,
+                190, 190,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
         # Return a colored placeholder if image missing
-        placeholder = QPixmap(260, 280)
+        placeholder = QPixmap(190, 190)
         placeholder.fill(QColor("#555555"))
         return placeholder
 
@@ -301,60 +306,60 @@ class FactCheckOverlay(QFrame):
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(8)
 
-        # ── Verdict badge ──────────────────────────────────────────────────────
-        self.verdict_label = QLabel("FACT CHECK ❌")
+        # â”€â”€ Verdict badge â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        self.verdict_label = QLabel("FACT CHECK")
         self.verdict_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.verdict_label.setStyleSheet(f"""
             color: #ff0000;
-            font-size: 22px;
+            font-size: 28px;
             font-weight: 900;
             font-family: {_IMPACT};
             letter-spacing: 4px;
         """)
         layout.addWidget(self.verdict_label)
 
-        # ── Claim ──────────────────────────────────────────────────────────────
+        # â”€â”€ Claim â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self.claim_label = QLabel()
         self.claim_label.setWordWrap(True)
         self.claim_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.claim_label.setStyleSheet(f"""
             color: #ffcc00;
-            font-size: 13px;
+            font-size: 15px;
             font-style: italic;
             font-family: {_SERIF};
         """)
         layout.addWidget(self.claim_label)
 
-        # ── Divider ────────────────────────────────────────────────────────────
+        # â”€â”€ Divider â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         divider = QFrame()
         divider.setFrameShape(QFrame.Shape.HLine)
         divider.setStyleSheet("color: #555555; margin: 4px 0;")
         layout.addWidget(divider)
 
-        # ── Real stat ──────────────────────────────────────────────────────────
+        # â”€â”€ Real stat â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self.stat_label = QLabel()
         self.stat_label.setWordWrap(True)
         self.stat_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.stat_label.setStyleSheet(f"""
             color: #ffffff;
-            font-size: 14px;
+            font-size: 16px;
             font-weight: bold;
             font-family: {_MONO};
         """)
         layout.addWidget(self.stat_label)
 
-        # ── Source note ────────────────────────────────────────────────────────
-        self.source_label = QLabel("— GPT-4 Fact Checker")
+        # â”€â”€ Source note â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        self.source_label = QLabel("-- GPT-4 Fact Checker")
         self.source_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.source_label.setStyleSheet("color: #888888; font-size: 10px;")
         layout.addWidget(self.source_label)
 
-        # ── Auto-hide timer ────────────────────────────────────────────────────
+        # â”€â”€ Auto-hide timer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self.hide)
 
-        # ── Flash animation ────────────────────────────────────────────────────
+        # â”€â”€ Flash animation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self._flash_timer = QTimer(self)
         self._flash_timer.timeout.connect(self._flash)
         self._flash_count = 0
@@ -362,10 +367,10 @@ class FactCheckOverlay(QFrame):
     def show_result(self, verdict: str, claim: str, real_stat: str):
         """Display a fact-check result."""
         verdict_configs = {
-            "FALSE":       ("#ff0000", "FACT CHECK  ❌  FALSE"),
-            "MISLEADING":  ("#ff8800", "⚠️  MISLEADING"),
-            "TRUE":        ("#00cc44", "✅  VERIFIED TRUE"),
-            "UNVERIFIABLE":("#888888", "🔍  UNVERIFIABLE"),
+            "FALSE": ("#ff0000", "FACT CHECK - FALSE"),
+            "MISLEADING": ("#ff8800", "FACT CHECK - MISLEADING"),
+            "TRUE": ("#00cc44", "FACT CHECK - VERIFIED TRUE"),
+            "UNVERIFIABLE": ("#888888", "FACT CHECK - UNVERIFIABLE"),
         }
 
         color, badge = verdict_configs.get(verdict, verdict_configs["UNVERIFIABLE"])
@@ -387,10 +392,10 @@ class FactCheckOverlay(QFrame):
         """)
 
         self.claim_label.setText(f'"{claim}"')
-        self.stat_label.setText(f"📊 {real_stat}")
+        self.stat_label.setText(f"REFERENCE: {real_stat}")
 
         self.show()
-        self._hide_timer.start(6000)  # hide after 6 seconds
+        self._hide_timer.start(9000)  # keep visible longer
 
         # Flash 3 times
         self._flash_count = 0
@@ -413,7 +418,7 @@ class DebateDashboard(QWidget):
     Main debate GUI window.
     
     Signals emitted for use by DebateWorker thread:
-    - (none — worker calls methods directly via Qt signals)
+    - (none â€” worker calls methods directly via Qt signals)
     
     Public slots (call from any thread via signals):
     - start_speaking(persona, text)
@@ -423,71 +428,82 @@ class DebateDashboard(QWidget):
     - show_fact_check(verdict, claim, real_stat)
     - add_ticker_message(text)
     """
+    sig_back_requested = pyqtSignal()
 
-    def __init__(self, my_persona: str):
+    def __init__(self, my_persona: str, module_label: str = ""):
         super().__init__()
         self.my_persona = my_persona
+        self.module_label = module_label or "AZURE + ROBOTIC VOICE | LIVE"
         self._setup_window()
         self._build_ui()
 
-    # ── Window setup ───────────────────────────────────────────────────────────
+    # â”€â”€ Window setup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _setup_window(self):
-        self.setWindowTitle("🏛️ AI PRESIDENTIAL DEBATE 2026 — PURDUE UNIVERSITY")
+        self.setWindowTitle("AI PRESIDENTIAL DEBATE 2026 - PURDUE UNIVERSITY")
         self.resize(1200, 750)
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(620, 420)
         self.setStyleSheet(f"background-color: {COLORS['bg']};")
 
-    # ── UI construction ────────────────────────────────────────────────────────
+    # â”€â”€ UI construction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _build_ui(self):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Header bar ─────────────────────────────────────────────────────────
+        # â”€â”€ Header bar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         header = self._build_header()
         root.addWidget(header)
 
-        # ── Main stage ─────────────────────────────────────────────────────────
+        # â”€â”€ Main stage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         stage_container = QWidget()
         stage_container.setStyleSheet(f"background-color: {COLORS['bg']};")
         stage_layout = QHBoxLayout(stage_container)
-        stage_layout.setContentsMargins(16, 16, 16, 8)
-        stage_layout.setSpacing(12)
+        stage_layout.setContentsMargins(8, 8, 8, 4)
+        stage_layout.setSpacing(8)
 
         self.trump_panel = CandidatePanel("trump", "Donald J. Trump", COLORS["trump_banner"])
         self.biden_panel = CandidatePanel("biden", "Joe Biden", COLORS["biden_banner"])
 
-        # Siskind moderator — smaller center panel
+        # Siskind moderator â€” smaller center panel
         self.siskind_panel = CandidatePanel("siskind", "Prof. Siskind", COLORS["siskind_bg"])
-        self.siskind_panel.setMaximumWidth(200)
+        self.siskind_panel.setMinimumWidth(220)
+        self.siskind_panel.setMaximumWidth(260)
 
-        stage_layout.addWidget(self.trump_panel, stretch=3)
-        stage_layout.addWidget(self.siskind_panel, stretch=2)
-        stage_layout.addWidget(self.biden_panel, stretch=3)
+        stage_layout.addWidget(self.trump_panel, stretch=4)
+        stage_layout.addWidget(self.siskind_panel, stretch=3)
+        stage_layout.addWidget(self.biden_panel, stretch=4)
 
         root.addWidget(stage_container, stretch=1)
 
-        # ── Fact-check overlay (absolute positioned) ───────────────────────────
+        # â”€â”€ Fact-check overlay (absolute positioned) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self.fact_overlay = FactCheckOverlay(stage_container)
-        self.fact_overlay.setGeometry(80, 80, stage_container.width() - 160, 180)
+        self.fact_overlay.setGeometry(40, 40, stage_container.width() - 80, 240)
 
         # Resize overlay when window resizes
         stage_container.resizeEvent = lambda e: self.fact_overlay.setGeometry(
-            80, 80, e.size().width() - 160, 200
+            40, 40, e.size().width() - 80, 240
         )
 
-        # ── Ticker ─────────────────────────────────────────────────────────────
+        self.fact_status_label = QLabel("FACT CHECK: STANDBY")
+        self.fact_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.fact_status_label.setStyleSheet(
+            "QLabel { background-color: #10151d; color: #ffd866; border-top: 1px solid #3a4656; "
+            "border-bottom: 1px solid #3a4656; padding: 6px; font-size: 12px; font-weight: 700; }"
+        )
+        root.addWidget(self.fact_status_label)
+
         self.ticker = ScrollingTicker()
         root.addWidget(self.ticker)
 
-        # ── Initial state ──────────────────────────────────────────────────────
+        # â”€â”€ Initial state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        self._highlight_selected_persona()
         self._set_my_panel_listening()
 
     def _build_header(self) -> QWidget:
         header = QWidget()
-        header.setFixedHeight(52)
+        header.setFixedHeight(44)
         header.setStyleSheet(f"""
             background: qlineargradient(
                 x1:0, y1:0, x2:1, y2:0,
@@ -502,8 +518,30 @@ class DebateDashboard(QWidget):
         hlayout = QHBoxLayout(header)
         hlayout.setContentsMargins(20, 0, 20, 0)
 
+        back_btn = QPushButton("Back To Modes")
+        back_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        back_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #1b1f25;
+                color: #f5f7fa;
+                border: 1px solid #606a78;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #273141;
+            }
+            QPushButton:pressed {
+                background-color: #18222f;
+            }
+        """)
+        back_btn.clicked.connect(self.sig_back_requested.emit)
+        hlayout.addWidget(back_btn)
+
         # Left: live badge
-        live = QLabel("🔴 LIVE")
+        live = QLabel("LIVE")
         live.setStyleSheet(f"""
             color: #ff4444;
             font-size: 14px;
@@ -512,14 +550,49 @@ class DebateDashboard(QWidget):
             letter-spacing: 2px;
         """)
         hlayout.addWidget(live)
+
+        persona_color = "#ffb3b3" if self.my_persona == "trump" else "#b6d4ff"
+        persona_border = "#d35d5d" if self.my_persona == "trump" else "#5d87d3"
+        persona_label = QLabel(f"PERSONA: {self.my_persona.upper()}")
+        persona_label.setStyleSheet(f"""
+            color: {persona_color};
+            background-color: rgba(16, 22, 31, 0.8);
+            border: 1px solid {persona_border};
+            border-radius: 6px;
+            padding: 3px 8px;
+            font-size: 11px;
+            font-weight: bold;
+            font-family: {_MONO};
+            margin-left: 8px;
+        """)
+        hlayout.addWidget(persona_label)
+
+        module_label = QLabel(self.module_label.upper())
+        module_label.setStyleSheet(
+            """
+            QLabel {
+                color: #d8e4f5;
+                background-color: rgba(16, 22, 31, 0.8);
+                border: 1px solid #5f7085;
+                border-radius: 6px;
+                padding: 3px 8px;
+                font-size: 10px;
+                font-weight: bold;
+                font-family: Courier New, monospace;
+                margin-left: 6px;
+            }
+            """
+        )
+        hlayout.addWidget(module_label)
+
         hlayout.addStretch()
 
         # Center: title
-        title = QLabel("🏛️  AI PRESIDENTIAL DEBATE 2026  🏛️")
+        title = QLabel("AI PRESIDENTIAL DEBATE 2026")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setStyleSheet(f"""
             color: {COLORS['gold']};
-            font-size: 20px;
+            font-size: 16px;
             font-weight: 900;
             font-family: {_IMPACT};
             letter-spacing: 3px;
@@ -544,12 +617,12 @@ class DebateDashboard(QWidget):
 
         return header
 
-    # ── Public slots (called from worker thread via Qt signals) ────────────────
+    # â”€â”€ Public slots (called from worker thread via Qt signals) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def start_speaking(self, persona: str, text: str):
         panel = self._get_panel(persona)
         if panel:
-            panel.set_speaking(text[:100] + "..." if len(text) > 100 else text)
+            panel.set_speaking(text)
         self.ticker.add_message(f"{persona.upper()}: {text}")
 
     def stop_speaking(self, persona: str):
@@ -570,11 +643,22 @@ class DebateDashboard(QWidget):
 
     def show_fact_check(self, verdict: str, claim: str, real_stat: str):
         self.fact_overlay.show_result(verdict, claim, real_stat)
+        self.fact_status_label.setText(f"FACT CHECK [{verdict}] {real_stat}")
+        if verdict == "TRUE":
+            color = "#2ecc71"
+        elif verdict in ("FALSE", "MISLEADING"):
+            color = "#ff6b6b"
+        else:
+            color = "#ffd866"
+        self.fact_status_label.setStyleSheet(
+            "QLabel { background-color: #10151d; border-top: 1px solid #3a4656; "
+            f"border-bottom: 1px solid #3a4656; padding: 6px; font-size: 12px; font-weight: 700; color: {color}; }}"
+        )
 
     def add_ticker_message(self, text: str):
         self.ticker.add_message(text)
 
-    # ── Internal helpers ───────────────────────────────────────────────────────
+    # â”€â”€ Internal helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     def _get_panel(self, persona: str) -> CandidatePanel:
         return {
@@ -588,19 +672,31 @@ class DebateDashboard(QWidget):
         if panel:
             panel.set_listening()
 
+    def _highlight_selected_persona(self):
+        active = self._get_panel(self.my_persona)
+        if active is None:
+            return
+
+        glow = QGraphicsDropShadowEffect(self)
+        glow.setBlurRadius(28)
+        glow.setXOffset(0)
+        glow.setYOffset(0)
+        glow.setColor(QColor("#ff7f7f" if self.my_persona == "trump" else "#7faeff"))
+        active.setGraphicsEffect(glow)
+
     def _update_clock(self):
         now = datetime.now().strftime("%I:%M:%S %p")
-        self.clock_label.setText(f"⏱ {now}")
+        self.clock_label.setText(f"TIME {now}")
 
     def keyPressEvent(self, event):
         """Keyboard shortcuts for debate control."""
         key = event.key()
-        # These get handled by main.py via a signal — we just pass the key
+        # These get handled by main.py via a signal â€” we just pass the key
         logger.debug("[GUI] Key pressed: %s", key)
         super().keyPressEvent(event)
 
 
-# ── Standalone test ────────────────────────────────────────────────────────────
+# â”€â”€ Standalone test â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     win = DebateDashboard("trump")
@@ -613,7 +709,7 @@ if __name__ == "__main__":
         QTimer.singleShot(4000, lambda: win.stop_speaking("trump"))
         QTimer.singleShot(4500, lambda: win.set_thinking("biden"))
         QTimer.singleShot(6000, lambda: win.start_speaking("biden",
-            "Look folks, here's the deal — this GUI is no malarkey. Not a joke."))
+            "Look folks, here's the deal - this GUI is no malarkey. Not a joke."))
         QTimer.singleShot(10000, lambda: win.show_fact_check(
             "FALSE",
             "We had the greatest economy in the history of our country.",

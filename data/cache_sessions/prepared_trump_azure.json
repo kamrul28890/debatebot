@@ -1,0 +1,9 @@
+{
+  "cache_kind": "module_cached_mode",
+  "persona": "trump",
+  "voice": "azure",
+  "script_version": "deterministic-v2",
+  "script_path": "data/cache_sessions/deterministic_debate_v2.json",
+  "persona_turns": 10,
+  "siskind_turns": 4
+}

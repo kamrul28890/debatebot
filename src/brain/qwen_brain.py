@@ -16,8 +16,7 @@ from pathlib import Path
 from typing import Optional
 from transformers import (
     AutoTokenizer,
-    AutoModelForCausalLM,
-    pipeline
+    AutoModelForCausalLM
 )
 from peft import PeftModel
 import logging
@@ -66,7 +65,6 @@ class QwenBrain:
 
         self.model = None
         self.tokenizer = None
-        self.pipeline = None
 
         # Load model
         self._load_model()
@@ -84,18 +82,8 @@ class QwenBrain:
                 logger.info(f"Local model not found, loading from HF Hub: {self.model_repo}")
                 self._load_hf_model()
 
-            # Create pipeline for text generation
-            self.pipeline = pipeline(
-                "text-generation",
-                model=self.model,
-                tokenizer=self.tokenizer,
-                device_map="cpu",  # Force CPU
-                torch_dtype=torch.float32,
-                max_new_tokens=150,
-                temperature=0.7,
-                do_sample=True,
-                pad_token_id=self.tokenizer.eos_token_id
-            )
+            if self.model is not None:
+                self.model.eval()
 
             logger.info("✅ Qwen model loaded successfully")
 
@@ -190,28 +178,35 @@ class QwenBrain:
         Returns:
             Generated response text
         """
-        if not self.pipeline:
+        if self.model is None or self.tokenizer is None:
             raise RuntimeError("Model not loaded")
 
         # Build full prompt
         full_prompt = self._build_prompt(prompt, context)
 
         try:
-            # Generate response
-            outputs = self.pipeline(
+            inputs = self.tokenizer(
                 full_prompt,
-                max_new_tokens=150,
-                temperature=0.7,
-                do_sample=True,
-                num_return_sequences=1,
-                pad_token_id=self.tokenizer.eos_token_id
+                return_tensors="pt",
+                truncation=True,
+                max_length=768,
             )
 
-            # Extract generated text
-            generated_text = outputs[0]['generated_text']
+            with torch.no_grad():
+                output_ids = self.model.generate(
+                    input_ids=inputs["input_ids"],
+                    attention_mask=inputs.get("attention_mask"),
+                    max_new_tokens=96,
+                    temperature=0.65,
+                    top_p=0.9,
+                    do_sample=True,
+                    pad_token_id=self.tokenizer.eos_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
 
-            # Remove the input prompt from the response
-            response = generated_text[len(full_prompt):].strip()
+            prompt_len = inputs["input_ids"].shape[1]
+            new_tokens = output_ids[0][prompt_len:]
+            response = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
 
             # Clean up response
             response = self._clean_response(response)
@@ -265,9 +260,7 @@ class QwenBrain:
         if self.model:
             del self.model
             del self.tokenizer
-            del self.pipeline
             torch.cuda.empty_cache()  # Even though we're on CPU
             self.model = None
             self.tokenizer = None
-            self.pipeline = None
             logger.info("Model unloaded from memory")

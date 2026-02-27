@@ -7,7 +7,6 @@ Azure Speech-to-Text listener, Mac-optimized.
 - Filters out self-echo by checking if our own TTS just fired
 """
 
-import os
 import logging
 import time
 import threading
@@ -28,7 +27,7 @@ class DebateListener:
     - Configurable silence timeout
     """
 
-    def __init__(self, silence_timeout_ms: int = 1500, initial_silence_timeout_ms: int = 15000):
+    def __init__(self, silence_timeout_ms: int = 1500, initial_silence_timeout_ms: int = 8000):
         settings.require_speech()
         speech_config = speechsdk.SpeechConfig(
             subscription=settings.azure_speech_key,
@@ -56,6 +55,7 @@ class DebateListener:
         # ── Echo suppression state ─────────────────────────────────────────────
         self._muted_until = 0.0  # epoch time until which we ignore audio
         self._mute_lock = threading.Lock()
+        self._stop_event = threading.Event()
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -67,6 +67,21 @@ class DebateListener:
         with self._mute_lock:
             self._muted_until = time.time() + seconds
 
+    def stop(self):
+        """
+        Signal listener shutdown so blocking waits can unwind quickly.
+        Safe to call multiple times.
+        """
+        self._stop_event.set()
+        try:
+            # Defensive: only affects continuous mode, but harmless here.
+            self.recognizer.stop_continuous_recognition_async()
+        except Exception:
+            pass
+
+    def close(self):
+        self.stop()
+
     def listen_for_turn(self, timeout_seconds: int = 60) -> str:
         """
         Block until opponent speech is recognized (or timeout).
@@ -75,6 +90,8 @@ class DebateListener:
         # Wait if we're in mute window (echo suppression)
         wait_start = time.time()
         while True:
+            if self._stop_event.is_set():
+                return ""
             with self._mute_lock:
                 if time.time() >= self._muted_until:
                     break
@@ -84,7 +101,33 @@ class DebateListener:
 
         logger.info("Listening for opponent")
 
-        result = self.recognizer.recognize_once_async().get()
+        # Run recognition on a helper thread so stop() can interrupt the wait loop.
+        result_holder = {}
+        done = threading.Event()
+
+        def _recognize_once():
+            try:
+                result_holder["result"] = self.recognizer.recognize_once_async().get()
+            except Exception as exc:
+                result_holder["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(target=_recognize_once, daemon=True).start()
+
+        while not done.wait(0.05):
+            if self._stop_event.is_set():
+                return ""
+            if time.time() - wait_start > timeout_seconds:
+                return ""
+
+        if "error" in result_holder:
+            logger.warning("STT recognize_once failed: %s", result_holder["error"])
+            return ""
+
+        result = result_holder.get("result")
+        if result is None:
+            return ""
 
         if result.reason == speechsdk.ResultReason.RecognizedSpeech:
             text = result.text.strip()
@@ -112,9 +155,11 @@ class DebateListener:
 
     def listen_for_interjection(self) -> str:
         """
-        Very short listen — 500ms silence timeout.
+        Very short listen - 500ms silence timeout.
         Used to catch interruptions mid-speech.
         """
+        if self._stop_event.is_set():
+            return ""
         # Temporarily tighten the silence timeout
         # (Azure doesn't support changing it on-the-fly, so we just do recognize_once
         # and return quickly)

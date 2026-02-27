@@ -51,6 +51,9 @@ class RuntimeConfig:
     azure_openai_fast_deployment: Optional[str]
     azure_speech_key: Optional[str]
     azure_speech_region: Optional[str]
+    azure_tts_voice_trump: Optional[str]
+    azure_tts_voice_biden: Optional[str]
+    azure_tts_voice_siskind: Optional[str]
 
     def require_openai(self) -> None:
         missing = []
@@ -90,5 +93,7 @@ settings = RuntimeConfig(
     ),
     azure_speech_key=_read("AZURE_SPEECH_KEY", keys_attr="azure_key"),
     azure_speech_region=_read("AZURE_SPEECH_REGION", keys_attr="azure_region"),
+    azure_tts_voice_trump=_read("AZURE_TTS_VOICE_TRUMP", keys_attr="azure_tts_voice_trump"),
+    azure_tts_voice_biden=_read("AZURE_TTS_VOICE_BIDEN", keys_attr="azure_tts_voice_biden"),
+    azure_tts_voice_siskind=_read("AZURE_TTS_VOICE_SISKIND", keys_attr="azure_tts_voice_siskind"),
 )
-

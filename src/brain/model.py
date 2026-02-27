@@ -15,7 +15,6 @@ import random
 from typing import List, Optional
 
 import openai
-from src.brain.rag import RAGRetriever
 from src.config import settings
 
 logger = logging.getLogger(__name__)
@@ -77,6 +76,7 @@ class DebateBrain:
         self.turn_count = 0
         self.rag_hits = 0
         self.rag_misses = 0
+        self.qwen_init_error: str | None = None
 
         # ── Initialize LLM backend ─────────────────────────────────────────────
         if brain_type == "azure":
@@ -100,6 +100,7 @@ class DebateBrain:
         # ── RAG retriever (graceful degradation if unavailable) ────────────────
         logger.info("[Brain:%s] Initializing RAG...", persona)
         try:
+            from src.brain.rag import RAGRetriever
             self.rag = RAGRetriever(persona)
             if self.rag.is_ready():
                 logger.info("[Brain:%s] RAG ready - %s quotes indexed", persona, self.rag.corpus_size())
@@ -123,9 +124,18 @@ class DebateBrain:
         self.deployment = settings.azure_openai_deployment
 
     def _init_qwen_client(self):
-        """Initialize Qwen client."""
-        from src.brain.qwen_brain import QwenBrain
-        self.qwen_brain = QwenBrain(self.persona)
+        """Initialize Qwen client (with Azure fallback on runtime failure)."""
+        try:
+            from src.brain.qwen_brain import QwenBrain
+
+            self.qwen_brain = QwenBrain(self.persona)
+            self.qwen_init_error = None
+        except Exception as exc:
+            self.qwen_init_error = str(exc)
+            logger.error("[Brain:%s] Qwen init failed: %s", self.persona, exc)
+            logger.warning("[Brain:%s] Falling back to Azure backend", self.persona)
+            self.brain_type = "azure"
+            self._init_azure_client()
 
     # ── Public API ─────────────────────────────────────────────────────────────
 

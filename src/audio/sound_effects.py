@@ -4,200 +4,212 @@ src/audio/sound_effects.py
 Crowd reaction sound effects engine.
 - Applause, laughter, booing, fact-check buzzer, fanfare
 - Triggered by keyword analysis of debate text
-- Non-blocking (plays in background thread)
+- Non-blocking playback
 """
 
-import os
-import sys
-import re
-import threading
-import random
+from __future__ import annotations
 
-# pygame for cross-platform audio on Mac
+import logging
+import os
+import random
+import threading
+
+
+logger = logging.getLogger(__name__)
+
+
 try:
     import pygame
-    pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
-    PYGAME_AVAILABLE = True
-except ImportError:
-    PYGAME_AVAILABLE = False
-    print("[SoundFX] pygame not available — sound effects disabled")
+
+    _PYGAME_IMPORTED = True
+except Exception as exc:
+    _PYGAME_IMPORTED = False
+    logger.warning("[SoundFX] pygame unavailable - sound effects disabled (%s)", exc)
 
 
-# ── Trigger keywords ──────────────────────────────────────────────────────────
 APPLAUSE_TRIGGERS = [
-    "american people", "united states", "freedom", "democracy", "constitution",
-    "veterans", "military", "god bless", "thank you", "together", "history",
+    "american people",
+    "united states",
+    "freedom",
+    "democracy",
+    "constitution",
+    "veterans",
+    "military",
+    "god bless",
+    "thank you",
+    "together",
+    "history",
 ]
 
 LAUGH_TRIGGERS = [
-    "believe me", "nobody knew", "the best", "tremendous", "malarkey",
-    "no joke", "here's the deal", "c'mon man", "sleepy", "witch hunt",
-    "perfect phone call", "covfefe",
+    "believe me",
+    "nobody knew",
+    "the best",
+    "tremendous",
+    "malarkey",
+    "no joke",
+    "here's the deal",
+    "c'mon man",
+    "sleepy",
+    "witch hunt",
+    "perfect phone call",
+    "covfefe",
 ]
 
 BOO_TRIGGERS = [
-    "fake news", "radical left", "open border", "crime", "disaster",
-    "terrible", "worst ever", "failed", "corrupt", "lies",
+    "fake news",
+    "radical left",
+    "open border",
+    "crime",
+    "disaster",
+    "terrible",
+    "worst ever",
+    "failed",
+    "corrupt",
+    "lies",
 ]
 
-# Siskind gets applause when he restores order
 SISKIND_APPLAUSE = ["moving on", "gentlemen", "time is up", "next topic"]
 
 
 class SoundEffectsEngine:
     """
-    Analyzes debate text and triggers crowd reactions.
-    All sounds play asynchronously.
+    Analyze debate text and trigger crowd reactions asynchronously.
     """
 
-    # Paths to sound files (user must place these in data/crowd_sounds/)
     SOUND_DIR = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        "data", "crowd_sounds"
+        "data",
+        "crowd_sounds",
     )
 
+    # Keys are logical sound ids. Values are canonical basename (without extension).
     SOUNDS = {
-        "applause":    "applause.wav",
-        "laugh":       "laugh.wav",
-        "boo":         "boo.wav",
-        "buzzer":      "buzzer.wav",        # fact-check fail
-        "ding":        "ding.wav",          # fact-check pass
-        "fanfare":     "fanfare.wav",       # opening / winner
-        "crickets":    "crickets.wav",      # awkward silence
-        "drumroll":    "drumroll.wav",      # before a big claim
+        "applause": "applause",
+        "laugh": "laugh",
+        "boo": "boo",
+        "buzzer": "buzzer",
+        "ding": "ding",
+        "fanfare": "fanfare",
+        "crickets": "crickets",
+        "drumroll": "drumroll",
     }
+    SUPPORTED_EXTENSIONS = (".wav", ".ogg", ".oga", ".mp3")
 
     def __init__(self):
-        self._channels = {}
         self._lock = threading.Lock()
-        self._last_played = {}   # sound_name -> timestamp, to prevent spam
-        self._load_sounds()
+        self._last_played: dict[str, float] = {}
+        self._sounds: dict[str, object | None] = {}
         self.enabled = True
+        self._audio_ready = self._init_audio()
+        self._load_sounds()
 
-    def react_to_speech(self, text: str, speaker: str = ""):
-        """
-        Analyze text and auto-trigger the most appropriate crowd reaction.
-        Call this after a candidate finishes speaking.
-        """
+    def react_to_speech(self, text: str, speaker: str = "") -> None:
         if not self.enabled:
             return
 
-        text_lower = text.lower()
+        text_lower = (text or "").lower()
+        if not text_lower:
+            return
 
-        # Check boo first (attacks get boos)
         if any(kw in text_lower for kw in BOO_TRIGGERS):
             self.play("boo", volume=0.5)
             return
 
-        # Laughter triggers
         if any(kw in text_lower for kw in LAUGH_TRIGGERS):
             self.play("laugh", volume=0.6)
             return
 
-        # Applause triggers
         if any(kw in text_lower for kw in APPLAUSE_TRIGGERS):
             self.play("applause", volume=0.7)
             return
 
-        # Siskind restoring order gets light applause
         if speaker == "siskind" and any(kw in text_lower for kw in SISKIND_APPLAUSE):
             self.play("applause", volume=0.3)
             return
 
-        # Random ambient murmur (10% chance)
         if random.random() < 0.1:
             self.play("applause", volume=0.2)
 
-    def play_fact_check_fail(self):
-        """Buzzer + dramatic sting for when a lie is caught."""
+    def play_fact_check_fail(self) -> None:
         self.play("buzzer", volume=0.8)
 
-    def play_fact_check_pass(self):
-        """Light ding for verified true statement."""
+    def play_fact_check_pass(self) -> None:
         self.play("ding", volume=0.5)
 
-    def play_opening_fanfare(self):
-        """Fanfare at debate start."""
+    def play_opening_fanfare(self) -> None:
         self.play("fanfare", volume=0.9)
 
-    def play(self, sound_name: str, volume: float = 0.7):
-        """Play a sound asynchronously. Prevents spam (1s cooldown per sound)."""
-        if not self.enabled or not PYGAME_AVAILABLE:
+    def play(self, sound_name: str, volume: float = 0.7) -> None:
+        if not self.enabled or not self._audio_ready:
             return
 
         import time
+
         now = time.time()
         with self._lock:
-            last = self._last_played.get(sound_name, 0)
+            last = self._last_played.get(sound_name, 0.0)
             if now - last < 1.0:
-                return  # cooldown
+                return
             self._last_played[sound_name] = now
 
-        t = threading.Thread(target=self._play_worker, args=(sound_name, volume), daemon=True)
-        t.start()
+        thread = threading.Thread(
+            target=self._play_worker,
+            args=(sound_name, volume),
+            daemon=True,
+        )
+        thread.start()
 
-    def toggle(self):
+    def toggle(self) -> bool:
         self.enabled = not self.enabled
         return self.enabled
 
-    # ── Internal ───────────────────────────────────────────────────────────────
-
-    def _load_sounds(self):
-        """Pre-load all sound files."""
-        if not PYGAME_AVAILABLE:
+    def _load_sounds(self) -> None:
+        if not self._audio_ready:
             return
-        self._sounds = {}
-        for name, filename in self.SOUNDS.items():
-            path = os.path.join(self.SOUND_DIR, filename)
-            if os.path.exists(path):
+
+        for name, stem in self.SOUNDS.items():
+            path = self._resolve_sound_file(stem)
+            if path and os.path.exists(path):
                 try:
                     self._sounds[name] = pygame.mixer.Sound(path)
-                    print(f"   ✅ Loaded sound: {name}")
-                except Exception as e:
-                    print(f"   ⚠️ Could not load {name}: {e}")
+                    logger.info("[SoundFX] Loaded sound: %s (%s)", name, os.path.basename(path))
+                except Exception as exc:
+                    self._sounds[name] = None
+                    logger.warning("[SoundFX] Could not load %s (%s)", name, exc)
             else:
-                # Create a silent placeholder so we don't crash
                 self._sounds[name] = None
-                print(f"   ⚠️ Missing sound file: {path}")
+                expected = ", ".join(f"{stem}{ext}" for ext in self.SUPPORTED_EXTENSIONS)
+                logger.warning("[SoundFX] Missing sound file for %s. Expected one of: %s", name, expected)
 
-    def _play_worker(self, sound_name: str, volume: float):
-        if not PYGAME_AVAILABLE:
+    def _resolve_sound_file(self, stem: str) -> str | None:
+        for ext in self.SUPPORTED_EXTENSIONS:
+            candidate = os.path.join(self.SOUND_DIR, f"{stem}{ext}")
+            if os.path.exists(candidate):
+                return candidate
+        return None
+
+    def _play_worker(self, sound_name: str, volume: float) -> None:
+        if not self._audio_ready:
             return
+
         sound = self._sounds.get(sound_name)
         if sound is None:
             return
+
         try:
             sound.set_volume(volume)
             sound.play()
-        except Exception as e:
-            print(f"[SoundFX] Error playing {sound_name}: {e}")
+        except Exception as exc:
+            logger.warning("[SoundFX] Error playing %s: %s", sound_name, exc)
 
-
-# ── How to get sound files ─────────────────────────────────────────────────────
-# Option 1: Download from freesound.org (free, CC licensed):
-#   - Applause: https://freesound.org/search/?q=applause+crowd
-#   - Laughter: https://freesound.org/search/?q=audience+laughter
-#   - Boo:      https://freesound.org/search/?q=crowd+booing
-#   - Buzzer:   https://freesound.org/search/?q=game+show+buzzer
-#   - Ding:     https://freesound.org/search/?q=correct+ding
-#
-# Option 2: Use the download_sounds.py script in scripts/
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-# ── Standalone test ────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    import time
-
-    sfx = SoundEffectsEngine()
-
-    print("Testing crowd reactions...")
-    sfx.react_to_speech("We believe in freedom and the American people!", "trump")
-    time.sleep(3)
-
-    sfx.react_to_speech("Nobody knew healthcare could be so complicated. Believe me.", "trump")
-    time.sleep(3)
-
-    sfx.play_fact_check_fail()
-    time.sleep(2)
-    print("Done.")
+    def _init_audio(self) -> bool:
+        if not _PYGAME_IMPORTED:
+            return False
+        try:
+            if not pygame.mixer.get_init():
+                pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
+            return True
+        except Exception as exc:
+            logger.warning("[SoundFX] pygame mixer init failed - disabling SFX (%s)", exc)
+            return False

@@ -1,0 +1,50 @@
+{
+  "applause": {
+    "source": "wikimedia_commons",
+    "title": "File:Applause-2.ogg",
+    "url": "https://upload.wikimedia.org/wikipedia/commons/5/5b/Applause-2.ogg",
+    "file": "applause.ogg",
+    "description": "Crowd applause"
+  },
+  "laugh": {
+    "source": "wikimedia_commons",
+    "title": "File:High pitched Laughter.wav",
+    "url": "https://upload.wikimedia.org/wikipedia/commons/0/01/High_pitched_Laughter.wav",
+    "file": "laugh.wav",
+    "description": "Audience laughter"
+  },
+  "boo": {
+    "source": "wikimedia_commons",
+    "title": "File:Soundgoats - Audience Booing.wav",
+    "url": "https://upload.wikimedia.org/wikipedia/commons/e/e5/Soundgoats_-_Audience_Booing.wav",
+    "file": "boo.wav",
+    "description": "Crowd booing"
+  },
+  "buzzer": {
+    "source": "wikimedia_commons",
+    "title": "File:Buzzer.wav",
+    "url": "https://upload.wikimedia.org/wikipedia/commons/5/55/Buzzer.wav",
+    "file": "buzzer.wav",
+    "description": "Wrong-answer buzzer"
+  },
+  "ding": {
+    "source": "generated_fallback",
+    "file": "ding.wav",
+    "description": "Correct-answer ding"
+  },
+  "fanfare": {
+    "source": "generated_fallback",
+    "file": "fanfare.wav",
+    "description": "Fanfare"
+  },
+  "crickets": {
+    "source": "generated_fallback",
+    "file": "crickets.wav",
+    "description": "Crickets / awkward silence"
+  },
+  "drumroll": {
+    "source": "generated_fallback",
+    "file": "drumroll.wav",
+    "description": "Drum roll"
+  }
+}

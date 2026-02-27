@@ -41,7 +41,7 @@ data/models/**/runs/
 data/models/**/events.out.tfevents*
 
 # Local/downloaded media not required in git history
-data/crowd_sounds/*.wav
+# Keep curated crowd sounds in-repo for zero-setup teammate onboarding.
 debug_*.wav
 speech_log.txt
 

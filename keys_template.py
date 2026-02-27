@@ -24,3 +24,13 @@ azure_openai_fast_deployment = "gpt-4o-mini"           # optional, used by fact-
 azure_key    = "YOUR_AZURE_SPEECH_KEY"
 azure_region = "eastus"                                # e.g. "eastus", "westus2"
 azure_endpoint = "https://YOUR_REGION.api.cognitive.microsoft.com/"
+
+# Optional: Persona-specific Azure Neural TTS voice overrides.
+# If left unset, the app uses built-in fallback voice lists.
+# Examples:
+#   azure_tts_voice_trump = "en-US-DavisNeural"
+#   azure_tts_voice_biden = "en-US-RogerNeural"
+#   azure_tts_voice_siskind = "en-US-TonyNeural"
+azure_tts_voice_trump = ""
+azure_tts_voice_biden = ""
+azure_tts_voice_siskind = ""
