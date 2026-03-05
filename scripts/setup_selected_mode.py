@@ -51,8 +51,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--with-rag", action="store_true", help="Install/validate optional RAG stack.")
     parser.add_argument("--skip-install", action="store_true", help="Skip dependency installation.")
     parser.add_argument("--skip-train", action="store_true", help="Skip Qwen fine-tuning when local adapter missing.")
-    parser.add_argument("--skip-cache", action="store_true", help="Skip deterministic/XTTS cache preparation.")
-    parser.add_argument("--force-cache", action="store_true", help="Force deterministic cache rebuild.")
     parser.add_argument("--fail-fast", action="store_true", help="Stop immediately on first failed step.")
     return parser.parse_args()
 
@@ -63,7 +61,7 @@ def has_hf_fallback() -> bool:
 
 def require_xtts_refs(persona: str) -> list[str]:
     missing = []
-    for p in (persona, "siskind"):
+    for p in (persona,):
         ref = ROOT / "data" / f"raw_{p}" / "ref.wav"
         if not ref.exists():
             missing.append(str(ref.relative_to(ROOT)))
@@ -154,27 +152,7 @@ def main() -> int:
     else:
         emit_progress(52, "Qwen setup skipped (Azure brain module)")
 
-    if not args.skip_cache:
-        emit_progress(68, "Preparing deterministic cache profile")
-        cache_cmd = [
-            PY,
-            "scripts/prepare_debate_cache.py",
-            "--persona",
-            args.persona,
-            "--voice",
-            combo["voice"],
-        ]
-        if args.force_cache:
-            cache_cmd.append("--force")
-        rc = run_step("Prepare module cache", cache_cmd)
-        if rc != 0:
-            failures += 1
-            if args.fail_fast:
-                return rc
-    else:
-        emit_progress(68, "Cache preparation skipped by request")
-
-    emit_progress(86, "Running doctor validation for selected module")
+    emit_progress(74, "Running doctor validation for selected module")
     doctor_cmd = [PY, "scripts/doctor.py"]
     if need_qwen:
         doctor_cmd.append("--qwen")
@@ -198,4 +176,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

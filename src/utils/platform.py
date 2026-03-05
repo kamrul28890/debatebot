@@ -29,10 +29,10 @@ IS_LINUX   = SYSTEM == "Linux"
 def get_env(key: str, default: str = "") -> str:
     """
     Read an environment variable cross-platform.
-    
-    Mac/Linux:  PERSONA=trump python src/main.py
-    Windows:    set PERSONA=trump && python src/main.py
-                OR: $env:PERSONA="trump"; python src/main.py  (PowerShell)
+
+    Example launch command:
+    - Mac/Linux: `python src/main.py`
+    - Windows: `python src/main.py`
     """
     return os.environ.get(key, default)
 
@@ -176,11 +176,11 @@ def run_command_instructions(persona: str) -> str:
     """Returns OS-appropriate run command for the README / help text."""
     if IS_WINDOWS:
         return (
-            f"Windows CMD:        set PERSONA={persona} && python src/main.py\n"
-            f"Windows PowerShell: $env:PERSONA='{persona}'; python src/main.py"
+            "Windows CMD:        python src/main.py\n"
+            "Windows PowerShell: python src/main.py"
         )
     else:
-        return f"Mac/Linux: PERSONA={persona} python src/main.py"
+        return "Mac/Linux: python src/main.py"
 
 
 if __name__ == "__main__":

@@ -18,3 +18,5 @@ def test_setup_selected_mode_help() -> None:
     assert "--combo" in completed.stdout
     assert "azure_robotic" in completed.stdout
     assert "qwen_cloned" in completed.stdout
+    assert "--skip-cache" not in completed.stdout
+    assert "--force-cache" not in completed.stdout

@@ -1,9 +1,9 @@
 #!/bin/bash
-# run_biden.sh — Mac/Linux launcher for Biden debate bot
+# run_biden.sh — Mac/Linux launcher for live DebateBot
 echo ""
 echo " =========================================="
-echo "  DEBATE NIGHT - BIDEN LAPTOP"
+echo "  DEBATEBOT - LIVE MODE"
 echo "  Purdue ECE49595NL / ECE59500NL"
 echo " =========================================="
 echo ""
-PERSONA=biden python src/main.py
+python src/main.py

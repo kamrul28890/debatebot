@@ -1,25 +1,27 @@
 """
 src/main.py
 
-Application entry point for Debate Night.
+Application entry point for DebateBot (dual-laptop, live-only).
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
 import sys
-from typing import Optional
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 # Keep startup output clean on all platforms.
 os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
-# Some Windows environments fail to load torch after Qt is initialized.
-# Best-effort preload before importing PyQt keeps Qwen/XTTS stable.
+# Best-effort torch preload before Qt for stability in some environments.
 try:
     import torch  # noqa: F401
+
     TORCH_PRELOAD_ERROR = ""
 except Exception as exc:
     TORCH_PRELOAD_ERROR = str(exc)
@@ -28,27 +30,19 @@ from PyQt6.QtCore import QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QKeyEvent
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-# Allow `python src/main.py` while keeping package-safe imports.
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.audio.listener import DebateListener
-from src.audio.sound_effects import SoundEffectsEngine
-from src.audio.xtts_speaker import DualSpeaker
-from src.brain.fact_checker import FactChecker
-from src.brain.model import DebateBrain
-from src.cache.deterministic import ensure_script, script_fingerprint
+from src.core import DebateOrchestrator
 from src.gui.dashboard import DebateDashboard
 from src.gui.voice_selector import DebateModeSelector
-from src.moderator.siskind import SiskindModerator
+from src.infra import DebateMetrics
+from src.services import DebateRuntime, LanSyncBus
 from src.utils.logging_utils import setup_logging
 from src.utils.platform import enable_windows_console_colors
 
 
 logger = logging.getLogger(__name__)
-MY_PERSONA = os.environ.get("PERSONA", "trump")
-
-
 enable_windows_console_colors()
 
 
@@ -74,15 +68,50 @@ def _env_float(name: str, default: float, minimum: float = 0.1) -> float:
     return max(minimum, value)
 
 
-def module_label(brain_mode: str, voice_mode: str, run_mode: str) -> str:
+def module_label(brain_mode: str, voice_mode: str) -> str:
     brain = "QWEN" if brain_mode == "qwen" else "AZURE"
     voice = "VOICE CLONING" if voice_mode == "xtts" else "ROBOTIC VOICE"
-    run = "CACHED" if run_mode == "cached" else "LIVE"
-    return f"{brain} + {voice} | {run}"
+    return f"{brain} + {voice} | DUAL-LAPTOP LIVE"
+
+
+@dataclass(frozen=True)
+class ModeratorCue:
+    prompt: str
+    first_speaker: str
+    round_id: str
+    source: str
+    ts: float
+    listen_ms: float = 0.0
+
+
+@dataclass(frozen=True)
+class LocalTurnOutcome:
+    text: str
+    generate_ms: float
+    speak_ms: float
+    interrupted: bool = False
+    interrupt_cue: ModeratorCue | None = None
+
+
+class _NoopChecker:
+    def __init__(self) -> None:
+        self.enabled = False
+
+    def check_async(self, statement: str, speaker: str, callback) -> None:
+        return
+
+    def toggle(self) -> bool:
+        self.enabled = not self.enabled
+        return self.enabled
+
+
+class _NoopSfx:
+    def play(self, sound_name: str, volume: float = 0.7) -> None:
+        return
 
 
 class DebateWorker(QThread):
-    """Background debate loop thread."""
+    """Dual-laptop candidate worker (local persona + moderator panel only)."""
 
     sig_start_speaking = pyqtSignal(str, str)
     sig_stop_speaking = pyqtSignal(str)
@@ -96,205 +125,287 @@ class DebateWorker(QThread):
         persona: str,
         voice_mode: str,
         brain_type: str = "azure",
-        run_mode: str = "live",
         module_name: str = "",
     ):
         super().__init__()
-        self.persona = persona
+        self.persona = persona if persona in {"trump", "biden"} else "trump"
         self.voice_mode = voice_mode
-        self.brain_type = brain_type
-        self.run_mode = run_mode if run_mode in ("live", "cached") else "live"
-        self.module_name = module_name or module_label(brain_type, voice_mode, self.run_mode)
+        self.requested_brain_type = brain_type
+        self.module_name = module_name or module_label(brain_type, voice_mode)
 
         self._running = True
-        self._force_speak = False
-        self._moderator_interject = False
-        self._pending_prompt: str | None = None
         self._cleaned_up = False
         self._startup_messages: list[str] = []
-        self._cached_lines: list[str] = []
-        self._cached_index = 0
-        self._cached_script: dict = {}
-        self._max_turns = _env_int("DEBATE_MAX_TURNS_PER_PERSONA", 8)
-        self._turns_spoken = 0
-        self._topic_prompt_interval = _env_int("DEBATE_TOPIC_PROMPT_INTERVAL", 1)
-        self._listen_timeout_seconds = _env_int("DEBATE_LISTEN_TIMEOUT_SECONDS", 45)
+
+        self._listen_timeout_seconds = _env_int("DEBATE_LISTEN_TIMEOUT_SECONDS", 18)
         self._target_turn_seconds = _env_float("DEBATE_TARGET_SECONDS_PER_TURN", 30.0, minimum=10.0)
         self._speech_words_per_second = _env_float("DEBATE_WORDS_PER_SECOND", 2.1, minimum=1.0)
+        self._max_turns_per_persona = _env_int("DEBATE_MAX_TURNS_PER_PERSONA", 8)
+
         target_words = max(45, int(round(self._target_turn_seconds * self._speech_words_per_second)))
         self._turn_min_words = max(35, target_words - 12)
         self._turn_max_words = max(self._turn_min_words + 6, target_words + 6)
         self._turn_hard_cap = self._turn_max_words + 10
-        self._moderator_mode = os.getenv("DEBATE_MODERATOR_MODE", "host_only").strip().lower()
-        if self._moderator_mode not in {"both", "host_only", "off"}:
-            self._moderator_mode = "host_only"
-        self._host_persona = os.getenv("DEBATE_HOST_PERSONA", "trump").strip().lower()
-        if self._host_persona not in {"trump", "biden"}:
-            self._host_persona = "trump"
-        self._moderator_enabled = self._moderator_mode == "both" or (
-            self._moderator_mode == "host_only" and self.persona == self._host_persona
-        )
+
         if TORCH_PRELOAD_ERROR:
             self._startup_messages.append(f"Torch preload warning: {TORCH_PRELOAD_ERROR}")
 
-        logger.info(
-            "Initializing worker persona=%s brain=%s voice=%s mode=%s",
-            persona,
-            brain_type,
-            voice_mode,
-            self.run_mode,
-        )
+        self.runtime = DebateRuntime()
+        self.orchestrator = DebateOrchestrator(max_turns_per_persona=self._max_turns_per_persona)
+        self.metrics = DebateMetrics()
 
-        self.brain = DebateBrain(persona, brain_type=brain_type)
-        if self.brain.brain_type != brain_type:
-            self._startup_messages.append(
-                f"Brain fallback active: requested {brain_type.upper()}, running {self.brain.brain_type.upper()}"
-            )
-            if getattr(self.brain, "qwen_init_error", None):
-                self._startup_messages.append(f"Reason: {self.brain.qwen_init_error}")
-        self.brain_type = self.brain.brain_type
+        self.lan = LanSyncBus()
+        self._lan_backlog: list[dict] = []
+        self._last_cue_ts = 0.0
+        self._pending_cue: ModeratorCue | None = None
 
-        self.speaker = DualSpeaker(persona, mode=voice_mode)
-        self._siskind_speaker = DualSpeaker("siskind", mode=voice_mode) if self._moderator_enabled else None
-        if voice_mode == "xtts" and self.speaker.mode != "xtts":
-            self._startup_messages.append("Voice fallback active: XTTS unavailable, using Azure TTS.")
-        self.moderator: SiskindModerator | None = None
-        if self._moderator_enabled:
-            try:
-                self.moderator = SiskindModerator(tts_callback=self._siskind_speak)
-            except Exception as exc:
-                logger.warning("Moderator initialization failed: %s", exc)
-                self._moderator_enabled = False
-                self._startup_messages.append(
-                    "Moderator unavailable on this laptop; running candidate-only channel."
-                )
-                self._startup_messages.append(f"Moderator init reason: {exc}")
-                self._siskind_speaker = None
+        self.checker = _NoopChecker()
+        self.sfx = _NoopSfx()
 
-        self.ears = DebateListener()
-        self.sfx = SoundEffectsEngine()
-        self.checker = FactChecker()
-
-        rag_ready = self.brain.rag_stats()["ready"]
-        self._startup_messages.insert(
-            0,
-            "SYSTEM READY | Module: "
-            f"{self.module_name} | Brain: "
-            f"{self.brain_type.upper()} | Voice: {self.speaker.mode.upper()} | "
-            f"RAG: {'ON' if rag_ready else 'OFF'} | MODE: {self.run_mode.upper()}",
-        )
-        self._startup_messages.append(
-            "SESSION PROFILE | "
-            f"turns/persona: {self._max_turns} | "
-            f"target turn: ~{int(self._target_turn_seconds)}s ({self._turn_min_words}-{self._turn_max_words} words) | "
-            f"listen timeout: {self._listen_timeout_seconds}s"
-        )
-        moderator_mode = "OFF"
-        if self._moderator_enabled:
-            moderator_mode = f"ON ({self._moderator_mode}, host={self._host_persona})"
-        self._startup_messages.append(f"MODERATOR: {moderator_mode}")
+    @property
+    def remote_persona(self) -> str:
+        return self.runtime.remote_persona
 
     def run(self) -> None:
         try:
+            self._bootstrap_runtime()
             for msg in self._startup_messages:
                 self.sig_ticker.emit(msg)
 
-            if self.run_mode == "cached":
-                self._initialize_cached_mode()
-
-            if self.moderator is not None:
-                self.moderator.open_debate()
-                self._pending_prompt = self.moderator.introduce_topic()
-            elif self._moderator_mode == "host_only":
-                self.sig_ticker.emit("MODERATOR: passive on this laptop; waiting for host prompts.")
-
-            while self._running:
-                try:
-                    self._debate_turn()
-                except KeyboardInterrupt:
-                    break
-                except Exception:
-                    logger.exception("Worker loop error")
+            self._run_dual_laptop_loop()
+        except KeyboardInterrupt:
+            logger.info("Worker interrupted")
+        except Exception:
+            logger.exception("Worker loop error")
+            self.sig_ticker.emit("SYSTEM ERROR: debate worker crashed. Check logs.")
         finally:
             self._cleanup_once()
 
-    def _debate_turn(self) -> None:
-        if not self._running:
-            return
+    def _bootstrap_runtime(self) -> None:
+        self.sig_ticker.emit("BOOTSTRAP: initializing dual-laptop runtime...")
+        started = time.monotonic()
 
-        if self._turns_spoken >= self._max_turns:
+        result = self.runtime.bootstrap(
+            local_persona=self.persona,
+            brain_type=self.requested_brain_type,
+            voice_mode=self.voice_mode,
+        )
+
+        self.lan.start()
+
+        if self.runtime.checker is not None:
+            self.checker = self.runtime.checker
+        if self.runtime.sfx is not None:
+            self.sfx = self.runtime.sfx
+
+        rag_ready = bool(self.runtime.brain and self.runtime.brain.rag_stats()["ready"])
+        self._startup_messages.insert(
+            0,
+            "SYSTEM READY | Module: "
+            f"{self.module_name} | Local Persona: {self.persona.upper()} | "
+            f"Remote Persona: {self.remote_persona.upper()} | Brain: {result.active_brain_label.upper()} | "
+            f"Voice: {self.voice_mode.upper()} | RAG: {'ON' if rag_ready else 'OFF/PARTIAL'} | MODE: DUAL-LAPTOP",
+        )
+        self._startup_messages.append(
+            "SESSION PROFILE | "
+            f"turns/persona: {self._max_turns_per_persona} | "
+            f"target turn: ~{int(self._target_turn_seconds)}s "
+            f"({self._turn_min_words}-{self._turn_max_words} words) | "
+            f"listen timeout: {self._listen_timeout_seconds}s"
+        )
+        self._startup_messages.append(
+            "SYNC POLICY: audio-first moderation/opponent detection; LAN cue/turn fallback enabled."
+        )
+        self._startup_messages.extend(result.startup_messages)
+
+        bootstrap_ms = (time.monotonic() - started) * 1000.0
+        self._startup_messages.append(f"BOOTSTRAP COMPLETE: {bootstrap_ms:.0f}ms")
+        logger.info("Worker bootstrap complete in %.0fms", bootstrap_ms)
+
+    def _run_dual_laptop_loop(self) -> None:
+        self.sig_ticker.emit(
+            "USER MODERATOR: waiting for cue. Address Trump/Biden to choose first speaker; default is Trump."
+        )
+
+        while self._running and self.orchestrator.can_continue():
+            cue = self._pending_cue
+            self._pending_cue = None
+            if cue is None:
+                cue = self._wait_for_next_moderator_cue()
+            if cue is None:
+                continue
+
+            plan = self.orchestrator.next_user_round(cue.prompt)
+            self.sig_start_speaking.emit("moderator", cue.prompt)
+            self.sig_stop_speaking.emit("moderator")
             self.sig_ticker.emit(
-                f"DEBATE COMPLETE: {self.persona.upper()} reached {self._max_turns} turns."
+                f"ROUND {cue.round_id}: first speaker={plan.first_speaker.upper()} source={cue.source.upper()}"
             )
-            self._running = False
-            return
 
-        self.sig_set_listening.emit(self.persona)
+            interrupted, interrupt_cue = self._run_round(plan, cue)
+            if interrupted:
+                if interrupt_cue is not None:
+                    self._pending_cue = interrupt_cue
+                continue
 
-        if self._moderator_interject and self.moderator is not None:
-            self._moderator_interject = False
-            self._pending_prompt = self.moderator.introduce_topic()
-            return
-        if self._moderator_interject:
-            self._moderator_interject = False
+            if not self._running or not self.orchestrator.can_continue():
+                break
 
-        if self._force_speak:
-            self._force_speak = False
-            opponent_text = "Please give your opening statement for this presidential debate."
-        elif self._pending_prompt:
-            opponent_text = self._pending_prompt
-            self._pending_prompt = None
-            self.sig_ticker.emit(f"MODERATOR: {opponent_text}")
-        else:
-            opponent_text = self.ears.listen_for_turn(timeout_seconds=self._listen_timeout_seconds)
-            if (
-                opponent_text
-                and not self._moderator_enabled
-                and self._looks_like_moderator_line(opponent_text)
-            ):
-                if self._moderator_addresses_persona(opponent_text, self.persona):
-                    logger.info(
-                        "Guest sync: moderator cue addressed to %s; proceeding to respond.",
-                        self.persona,
-                    )
-                    self.sig_ticker.emit("SYNC: heard moderator cue for this channel; responding.")
-                else:
-                    extracted = self._extract_opponent_statement_after_other_persona_cue(opponent_text, self.persona)
-                    if extracted:
-                        logger.info("Guest sync: merged moderator+opponent transcript; using extracted opponent content.")
-                        self.sig_ticker.emit("SYNC: merged cue+opponent transcript; proceeding.")
-                        opponent_text = extracted
-                    else:
-                        logger.info(
-                            "Guest sync: moderator cue addressed to other side; holding. text=%s",
-                            opponent_text,
-                        )
-                        if self._turns_spoken == 0:
-                            self.sig_ticker.emit(
-                                "SYNC: heard moderator prompt for other side; waiting for first opponent response."
-                            )
-                        else:
-                            self.sig_ticker.emit("SYNC: heard moderator cue for other side; holding.")
-                        return
-            if (
-                opponent_text
-                and self.moderator is not None
-                and self._turns_spoken > 0
-                and self._turns_spoken % self._topic_prompt_interval == 0
-            ):
-                topic_prompt = self.moderator.introduce_topic()
-                opponent_text = f"{topic_prompt}\n\nOpponent statement: {opponent_text}"
+            self.sig_set_listening.emit("moderator")
+            self.sig_ticker.emit("USER MODERATOR: ask the next question.")
+            time.sleep(0.08)
 
-        if not self._running or not opponent_text:
-            return
+        self.sig_ticker.emit("DEBATE COMPLETE: dual-laptop session finished.")
+
+    def _wait_for_next_moderator_cue(self) -> ModeratorCue | None:
+        ears = self.runtime.ears
+        if ears is None:
+            while self._running and self.orchestrator.can_continue():
+                event = self._take_lan_event(
+                    lambda e: e.get("type") == "moderator_cue" and float(e.get("ts", 0.0)) > self._last_cue_ts
+                )
+                if event:
+                    cue = self._cue_from_event(event, source="lan")
+                    self._last_cue_ts = cue.ts
+                    self.sig_ticker.emit("SYNC FALLBACK: accepted moderator cue from LAN.")
+                    return cue
+                time.sleep(0.1)
+            return None
+
+        while self._running and self.orchestrator.can_continue():
+            self.sig_set_listening.emit("moderator")
+
+            # Priority 1: audio capture.
+            started = time.monotonic()
+            heard = ears.listen_for_turn(timeout_seconds=self._listen_timeout_seconds)
+            listen_ms = (time.monotonic() - started) * 1000.0
+            heard = " ".join((heard or "").split())
+            if heard:
+                cue = self._cue_from_text(heard, source="audio", listen_ms=listen_ms)
+                self._last_cue_ts = cue.ts
+                self._publish_moderator_cue(cue)
+                return cue
+
+            # Priority 2: LAN fallback if no audio captured.
+            event = self._take_lan_event(
+                lambda e: e.get("type") == "moderator_cue" and float(e.get("ts", 0.0)) > self._last_cue_ts
+            )
+            if event:
+                cue = self._cue_from_event(event, source="lan")
+                self._last_cue_ts = cue.ts
+                self.sig_ticker.emit("SYNC FALLBACK: accepted moderator cue from LAN.")
+                return cue
+
+        return None
+
+    def _run_round(self, plan, cue: ModeratorCue) -> tuple[bool, ModeratorCue | None]:
+        round_started_at = time.time()
+
+        if plan.first_speaker == self.persona:
+            outcome = self._speak_local_turn(
+                prompt=f"Moderator question: {cue.prompt}\n\nAnswer directly and clearly.",
+                round_id=cue.round_id,
+                round_started_at=round_started_at,
+                listen_ms=cue.listen_ms,
+            )
+            if outcome.interrupted:
+                return True, outcome.interrupt_cue
+
+            self.orchestrator.begin_second_speaker()
+            opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(round_started_at, cue.round_id)
+            if interrupt is not None:
+                return True, interrupt
+            if opponent_text:
+                self._record_remote_turn(opponent_text, listen_ms)
+
+            self.orchestrator.finish_round()
+            return False, None
+
+        # Remote speaks first.
+        opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(round_started_at, cue.round_id)
+        if interrupt is not None:
+            return True, interrupt
+        if opponent_text:
+            self._record_remote_turn(opponent_text, listen_ms)
+
+        self.orchestrator.begin_second_speaker()
+        outcome = self._speak_local_turn(
+            prompt=self._build_second_turn_prompt(cue.prompt, opponent_text),
+            round_id=cue.round_id,
+            round_started_at=round_started_at,
+            listen_ms=0.0,
+        )
+        if outcome.interrupted:
+            return True, outcome.interrupt_cue
+
+        self.orchestrator.finish_round()
+        return False, None
+
+    def _wait_for_opponent_turn(self, round_started_at: float, round_id: str) -> tuple[str, float, ModeratorCue | None]:
+        ears = self.runtime.ears
+        if ears is None:
+            return "", 0.0, None
+
+        while self._running and self.orchestrator.can_continue():
+            cue = self._take_interrupt_cue(round_started_at)
+            if cue is not None:
+                self.sig_ticker.emit("INTERRUPT: new moderator cue received (LAN).")
+                return "", 0.0, cue
+
+            self.sig_set_listening.emit(self.persona)
+            started = time.monotonic()
+            heard = ears.listen_for_turn(timeout_seconds=self._listen_timeout_seconds)
+            listen_ms = (time.monotonic() - started) * 1000.0
+            heard = " ".join((heard or "").split())
+
+            if heard:
+                if self._looks_like_moderator_cue(heard):
+                    cue = self._cue_from_text(heard, source="audio", listen_ms=listen_ms)
+                    self._last_cue_ts = cue.ts
+                    self._publish_moderator_cue(cue)
+                    self.sig_ticker.emit("INTERRUPT: new moderator cue received (audio).")
+                    return "", listen_ms, cue
+                return heard, listen_ms, None
+
+            fallback = self._take_lan_event(
+                lambda e: (
+                    e.get("type") == "speaker_finished"
+                    and e.get("persona") == self.remote_persona
+                    and str(e.get("round_id", "")) == round_id
+                    and float(e.get("ts", 0.0)) >= (round_started_at - 1.0)
+                )
+            )
+            if fallback:
+                text = " ".join(str(fallback.get("text", "")).split())
+                self.sig_ticker.emit("SYNC FALLBACK: using LAN opponent turn payload.")
+                return text, 0.0, None
+
+        return "", 0.0, None
+
+    def _speak_local_turn(
+        self,
+        prompt: str,
+        round_id: str,
+        round_started_at: float,
+        listen_ms: float,
+    ) -> LocalTurnOutcome:
+        if not self._running:
+            return LocalTurnOutcome("", 0.0, 0.0, interrupted=True)
+
+        if not self.orchestrator.turn_available(self.persona):
+            self.sig_ticker.emit(
+                f"TURN LIMIT: {self.persona.upper()} already reached {self._max_turns_per_persona} turns; skipping."
+            )
+            return LocalTurnOutcome("", 0.0, 0.0, interrupted=False)
+
+        cue = self._take_interrupt_cue(round_started_at)
+        if cue is not None:
+            return LocalTurnOutcome("", 0.0, 0.0, interrupted=True, interrupt_cue=cue)
 
         self.sig_set_thinking.emit(self.persona)
-        self.sig_ticker.emit(f"OPPONENT: {opponent_text}")
+        self.sig_ticker.emit(f"PROMPT -> {self.persona.upper()}: {prompt}")
 
-        if self.run_mode == "cached":
-            reply = self._next_cached_response(opponent_text)
-        else:
-            reply = self.brain.generate_response(opponent_text)
+        reply, generate_ms = self._generate_response_with_retry(prompt)
         reply = self._format_turn_text(
             reply,
             target_words=(self._turn_min_words + self._turn_max_words) // 2,
@@ -303,38 +414,248 @@ class DebateWorker(QThread):
             hard_cap=self._turn_hard_cap,
         )
         if not self._running:
-            return
-
-        stats = self.brain.rag_stats()
-        if stats["ready"] and self.brain.turn_count > 0 and self.brain.turn_count % 5 == 0:
-            self.sig_ticker.emit(
-                f"RAG: {stats['hits']} hits / {stats['misses']} misses | "
-                f"corpus: {stats['corpus_size']} quotes"
-            )
-
-        self.checker.check_async(opponent_text, "opponent", self._on_fact_check_result)
-
-        if not self._running:
-            return
+            return LocalTurnOutcome("", generate_ms, 0.0, interrupted=True)
+        if not reply:
+            self.sig_ticker.emit(f"LLM returned empty response for {self.persona.upper()}; skipping turn.")
+            return LocalTurnOutcome("", generate_ms, 0.0, interrupted=False)
 
         words = len(reply.split())
-        self.ears.mute_for(words / self._speech_words_per_second + 1.5)
+        if self.runtime.ears is not None:
+            self.runtime.ears.mute_for(words / self._speech_words_per_second + 1.2)
 
+        chunks = self._split_for_speech(reply)
         self.sig_start_speaking.emit(self.persona, reply)
-        self.sfx.react_to_speech(reply, self.persona)
-        try:
-            self.speaker.speak(reply)
-        except Exception:
-            logger.exception("Primary speaker failure")
-            self.sig_ticker.emit("Voice output error on primary speaker.")
-        self.sig_stop_speaking.emit(self.persona)
-        self._turns_spoken += 1
+        speak_started = time.monotonic()
 
-        if self._turns_spoken >= self._max_turns:
-            self.sig_ticker.emit(
-                f"DEBATE COMPLETE: {self.persona.upper()} delivered {self._max_turns} turns."
+        for chunk in chunks:
+            cue = self._take_interrupt_cue(round_started_at)
+            if cue is not None:
+                if self.runtime.speaker is not None:
+                    self.runtime.speaker.stop()
+                self.sig_stop_speaking.emit(self.persona)
+                self.sig_ticker.emit("INTERRUPT: local turn interrupted by new moderator cue.")
+                return LocalTurnOutcome("", generate_ms, (time.monotonic() - speak_started) * 1000.0, True, cue)
+
+            try:
+                if self.runtime.speaker is not None:
+                    self.runtime.speaker.speak(chunk)
+            except Exception:
+                logger.exception("Primary speaker failure for %s", self.persona)
+                self.sig_ticker.emit(f"Voice output error on {self.persona.upper()} channel.")
+                break
+
+        speak_ms = (time.monotonic() - speak_started) * 1000.0
+        self.sig_stop_speaking.emit(self.persona)
+
+        self.orchestrator.record_candidate_turn(self.persona)
+        turns = self.orchestrator.turns_spoken
+        self.sig_ticker.emit(f"TURN COUNT | TRUMP={turns['trump']} | BIDEN={turns['biden']}")
+
+        self.checker.check_async(reply, self.persona, self._on_fact_check_result)
+        self._publish_local_turn(round_id=round_id, text=reply)
+
+        metric = self.metrics.record_turn(
+            persona=self.persona,
+            round_index=turns[self.persona],
+            words=words,
+            listen_ms=listen_ms,
+            generate_ms=generate_ms,
+            speak_ms=speak_ms,
+        )
+        logger.info(
+            "turn_complete persona=%s round=%s words=%s listen_ms=%.0f generate_ms=%.0f speak_ms=%.0f total_ms=%.0f",
+            metric.persona,
+            metric.round_index,
+            metric.words,
+            metric.listen_ms,
+            metric.generate_ms,
+            metric.speak_ms,
+            metric.total_ms,
+        )
+        self.sig_ticker.emit(self.metrics.recent_summary())
+
+        return LocalTurnOutcome(reply, generate_ms, speak_ms, interrupted=False)
+
+    def _record_remote_turn(self, opponent_text: str, listen_ms: float) -> None:
+        if not opponent_text.strip():
+            return
+        self.orchestrator.record_candidate_turn(self.remote_persona)
+        turns = self.orchestrator.turns_spoken
+        self.sig_ticker.emit(f"OPPONENT ({self.remote_persona.upper()}): {opponent_text}")
+        self.sig_ticker.emit(f"TURN COUNT | TRUMP={turns['trump']} | BIDEN={turns['biden']}")
+
+        self.metrics.record_turn(
+            persona=self.remote_persona,
+            round_index=turns[self.remote_persona],
+            words=len(opponent_text.split()),
+            listen_ms=listen_ms,
+            generate_ms=0.0,
+            speak_ms=0.0,
+        )
+        self.sig_ticker.emit(self.metrics.recent_summary())
+
+    def _generate_response_with_retry(self, prompt: str, attempts: int = 2) -> tuple[str, float]:
+        brain = self.runtime.brain
+        if brain is None:
+            return "", 0.0
+
+        for attempt in range(1, attempts + 1):
+            if not self._running:
+                return "", 0.0
+
+            started = time.monotonic()
+            try:
+                reply = brain.generate_response(prompt)
+                elapsed_ms = (time.monotonic() - started) * 1000.0
+                return reply, elapsed_ms
+            except Exception as exc:
+                logger.warning(
+                    "LLM generation failed persona=%s attempt=%s/%s err=%s",
+                    self.persona,
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                if attempt < attempts:
+                    time.sleep(0.25 * attempt)
+
+        fallback = getattr(brain, "_fallback_response", lambda: "I need a moment.")
+        return fallback(), 0.0
+
+    def _build_second_turn_prompt(self, moderator_prompt: str, opponent_text: str) -> str:
+        if not opponent_text.strip():
+            return f"Moderator question: {moderator_prompt}\n\nGive your direct answer in debate format."
+
+        opponent_name = "Biden" if self.remote_persona == "biden" else "Trump"
+        return (
+            f"Moderator question: {moderator_prompt}\n\n"
+            f"Opponent ({opponent_name}) said: {opponent_text}\n\n"
+            "Respond directly to the moderator question and rebut the opponent's main claim."
+        )
+
+    @staticmethod
+    def _split_for_speech(text: str) -> list[str]:
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        if not sentences:
+            return [text]
+        return sentences
+
+    @staticmethod
+    def _looks_like_moderator_cue(text: str) -> bool:
+        sample = " ".join((text or "").lower().split())
+        if not sample:
+            return False
+
+        words = sample.split()
+        if len(words) <= 1:
+            return False
+
+        if sample.startswith(("next question", "new question", "next topic")):
+            return True
+
+        if re.match(
+            r"^(hey\s+)?((mr|president)\.?\s+)?(trump|biden|donald|joe)\b",
+            sample,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
+        question_starters = (
+            "what ",
+            "why ",
+            "how ",
+            "when ",
+            "where ",
+            "who ",
+            "should ",
+            "are we",
+            "do we",
+            "can we",
+        )
+        if "?" in sample and len(words) <= 24 and any(sample.startswith(prefix) for prefix in question_starters):
+            return True
+
+        if len(words) <= 16 and any(sample.startswith(prefix) for prefix in question_starters):
+            return True
+
+        return False
+
+    def _cue_from_text(self, text: str, source: str, listen_ms: float = 0.0) -> ModeratorCue:
+        cleaned = " ".join((text or "").split())
+        ts = time.time()
+        first = DebateOrchestrator.choose_first_speaker(cleaned)
+        seed = f"{cleaned.lower()}|{first}|{int(ts * 2)}"
+        round_id = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+        return ModeratorCue(
+            prompt=cleaned,
+            first_speaker=first,
+            round_id=round_id,
+            source=source,
+            ts=ts,
+            listen_ms=listen_ms,
+        )
+
+    @staticmethod
+    def _cue_from_event(event: dict, source: str) -> ModeratorCue:
+        prompt = " ".join(str(event.get("prompt", "")).split())
+        first = str(event.get("first_speaker", DebateOrchestrator.choose_first_speaker(prompt))).lower()
+        if first not in {"trump", "biden"}:
+            first = DebateOrchestrator.choose_first_speaker(prompt)
+        round_id = str(event.get("round_id", "")) or hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12]
+        return ModeratorCue(
+            prompt=prompt,
+            first_speaker=first,
+            round_id=round_id,
+            source=source,
+            ts=float(event.get("ts", time.time())),
+            listen_ms=0.0,
+        )
+
+    def _publish_moderator_cue(self, cue: ModeratorCue) -> None:
+        self.lan.publish(
+            "moderator_cue",
+            prompt=cue.prompt,
+            first_speaker=cue.first_speaker,
+            round_id=cue.round_id,
+            persona="moderator",
+        )
+
+    def _publish_local_turn(self, round_id: str, text: str) -> None:
+        self.lan.publish(
+            "speaker_finished",
+            persona=self.persona,
+            round_id=round_id,
+            text=text,
+        )
+
+    def _refresh_lan_backlog(self) -> None:
+        events = self.lan.drain_events()
+        if events:
+            self._lan_backlog.extend(events)
+
+    def _take_lan_event(self, predicate) -> dict | None:
+        self._refresh_lan_backlog()
+        for idx, event in enumerate(self._lan_backlog):
+            try:
+                if predicate(event):
+                    return self._lan_backlog.pop(idx)
+            except Exception:
+                continue
+        return None
+
+    def _take_interrupt_cue(self, round_started_at: float) -> ModeratorCue | None:
+        event = self._take_lan_event(
+            lambda e: (
+                e.get("type") == "moderator_cue"
+                and float(e.get("ts", 0.0)) > max(self._last_cue_ts, round_started_at)
             )
-            self._running = False
+        )
+        if not event:
+            return None
+
+        cue = self._cue_from_event(event, source="lan")
+        self._last_cue_ts = cue.ts
+        return cue
 
     def _on_fact_check_result(self, result: dict) -> None:
         if not self._running:
@@ -345,81 +666,7 @@ class DebateWorker(QThread):
         real_stat = result.get("real_stat", "")
 
         self.sig_fact_check.emit(verdict, claim, real_stat)
-
-        if verdict in ("FALSE", "MISLEADING"):
-            self.sfx.play_fact_check_fail()
-        elif verdict == "TRUE":
-            self.sfx.play_fact_check_pass()
-
-        self.sig_ticker.emit(f"FACT CHECK [{verdict}]: {claim[:60]}...")
-
-    def _siskind_speak(self, text: str) -> None:
-        if not text or not self._running or self._siskind_speaker is None:
-            return
-
-        text = self._format_turn_text(
-            text,
-            target_words=32,
-            min_words=12,
-            max_words=50,
-            hard_cap=60,
-        )
-        words = len(text.split())
-        self.ears.mute_for(words / self._speech_words_per_second + 1.0)
-        self.sig_start_speaking.emit("siskind", text)
-        try:
-            self._siskind_speaker.speak(text)
-        except Exception:
-            logger.exception("Siskind speaker failure")
-            self.sig_ticker.emit("Voice output error on moderator channel.")
-        self.sig_stop_speaking.emit("siskind")
-
-    def _initialize_cached_mode(self) -> None:
-        base_dir = Path(__file__).resolve().parent.parent
-        self.sig_ticker.emit("CACHE: loading deterministic script...")
-        try:
-            self._cached_script = ensure_script(base_dir)
-        except Exception as exc:
-            logger.warning("Cached mode script load failed: %s", exc)
-            self.sig_ticker.emit(f"CACHE: failed to load script ({exc}) - using live generation")
-            self.run_mode = "live"
-            return
-
-        self._cached_lines = list(self._cached_script.get(self.persona, []))
-        self._cached_index = 0
-        if len(self._cached_lines) > self._max_turns:
-            self._cached_lines = self._cached_lines[: self._max_turns]
-
-        if not self._cached_lines:
-            self.sig_ticker.emit("CACHE: no lines found for persona - using live generation")
-            self.run_mode = "live"
-            return
-
-        self.sig_ticker.emit(
-            f"CACHE: loaded {len(self._cached_lines)} deterministic turns for {self.persona.upper()}"
-        )
-        try:
-            fingerprint = script_fingerprint(self._cached_script)[:12]
-            self.sig_ticker.emit(f"CACHE: session sync fingerprint {fingerprint}")
-        except Exception:
-            pass
-
-        if self.speaker.mode == "xtts" and self.speaker.xtts_speaker is not None:
-            coverage = self.speaker.estimate_cache_coverage(self._cached_lines)
-            if coverage < 0.99:
-                self.sig_ticker.emit(
-                    "CACHE: XTTS audio cache incomplete. Run 'Prepare Cache For Selected Module' for zero-latency playback."
-                )
-
-    def _next_cached_response(self, opponent_text: str) -> str:
-        if self._cached_index < len(self._cached_lines):
-            line = self._cached_lines[self._cached_index]
-            self._cached_index += 1
-            return line
-
-        self.sig_ticker.emit("Cached script exhausted; switching to live generation.")
-        self.run_mode = "live"
-        return self.brain.generate_response(opponent_text)
+        self.sig_ticker.emit(f"FACT CHECK [{verdict}]: {claim[:80]}...")
 
     @staticmethod
     def _format_turn_text(
@@ -429,9 +676,6 @@ class DebateWorker(QThread):
         max_words: int = 55,
         hard_cap: int = 70,
     ) -> str:
-        """
-        Keep turns around target length while preserving sentence boundaries.
-        """
         cleaned = " ".join((text or "").split())
         if not cleaned:
             return ""
@@ -440,7 +684,6 @@ class DebateWorker(QThread):
         if len(words) <= max_words:
             return cleaned
 
-        # Try sentence-aware clipping first.
         sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", cleaned) if s.strip()]
         if sentences:
             selected: list[str] = []
@@ -451,12 +694,8 @@ class DebateWorker(QThread):
                     selected.append(sentence)
                     count += wc
                     continue
-
-                # If we already have enough content, stop before overflow.
                 if count >= min_words:
                     break
-
-                # Otherwise allow one sentence overflow up to hard_cap so we end cleanly.
                 if count + wc <= hard_cap:
                     selected.append(sentence)
                     count += wc
@@ -468,7 +707,6 @@ class DebateWorker(QThread):
                 if min_words <= merged_words <= hard_cap:
                     return merged
 
-        # Fallback: find punctuation close to target within first hard_cap words.
         window = " ".join(words[:hard_cap])
         best_end = -1
         best_delta = 10_000
@@ -484,116 +722,23 @@ class DebateWorker(QThread):
         if best_end > 0:
             return window[:best_end].strip()
 
-        # Last resort: keep it readable without abrupt comma/semicolon ending.
         clipped = " ".join(words[:max_words]).rstrip(" ,;:")
         if clipped and clipped[-1] not in ".!?":
             clipped += "."
         return clipped
 
-    @staticmethod
-    def _looks_like_moderator_line(text: str) -> bool:
-        sample = (text or "").strip().lower()
-        hints = (
-            "good evening",
-            "our first topic",
-            "next topic",
-            "moving on",
-            "final topic",
-            "round one",
-            "round two",
-            "round three",
-            "round four",
-            "round five",
-            "round six",
-            "round seven",
-            "round eight",
-            "thirty seconds",
-            "you have 30 seconds",
-            "you have thirty seconds",
-            "gentlemen",
-            "time is up",
-            "seconds remaining",
-            "we are moving on",
-        )
-        return any(token in sample for token in hints)
-
-    @staticmethod
-    def _moderator_addresses_persona(text: str, persona: str) -> bool:
-        """
-        Return True when a moderator line explicitly calls on this persona.
-        """
-        sample = re.sub(r"[^a-z0-9\s]", " ", (text or "").strip().lower())
-        sample = " ".join(sample.split())
-
-        mine = ("trump", "donald", "mr trump") if persona == "trump" else ("biden", "joe", "mr biden")
-        other = ("biden", "joe", "mr biden") if persona == "trump" else ("trump", "donald", "mr trump")
-
-        if any(token in sample for token in mine):
-            return True
-        if any(token in sample for token in other):
-            return False
-        return False
-
-    @staticmethod
-    def _extract_opponent_statement_after_other_persona_cue(text: str, persona: str) -> Optional[str]:
-        """
-        Sometimes STT merges "Mr. X, thirty seconds." plus X's speech into one transcript.
-        If the cue targets the other persona, try to extract the trailing opponent content.
-        """
-        sample = " ".join((text or "").split())
-        if not sample:
-            return None
-
-        other_patterns = (
-            r"\bmr\.?\s+trump\b",
-            r"\bdonald\b",
-        ) if persona == "biden" else (
-            r"\bmr\.?\s+biden\b",
-            r"\bjoe\b",
-        )
-
-        last_end = -1
-        for pat in other_patterns:
-            for match in re.finditer(pat, sample, flags=re.IGNORECASE):
-                last_end = max(last_end, match.end())
-        if last_end < 0 or last_end >= len(sample):
-            return None
-
-        tail = sample[last_end:].lstrip(" ,:-")
-        if not tail:
-            return None
-
-        # Drop the first cue sentence when it is still moderator control text.
-        cue_words = ("seconds", "time", "round", "topic", "moving on", "you have")
-        first_sentence = re.split(r"(?<=[.!?])\s+", tail, maxsplit=1)[0]
-        if any(word in first_sentence.lower() for word in cue_words):
-            parts = re.split(r"(?<=[.!?])\s+", tail, maxsplit=1)
-            if len(parts) == 2:
-                tail = parts[1].strip()
-
-        cleaned = " ".join(tail.split())
-        if len(cleaned.split()) < 8:
-            return None
-        return cleaned
-
-    def force_speak(self) -> None:
-        self._force_speak = True
-
-    def trigger_moderator(self) -> None:
-        if self.moderator is None:
-            return
-        self._moderator_interject = True
-
     def stop(self) -> None:
-        """Graceful cooperative stop for UI back/exit actions."""
         if not self._running:
             return
-
         self._running = False
-        self._force_speak = False
-        self._moderator_interject = False
-        self._pending_prompt = None
+        self.orchestrator.stop()
         self._cleanup_once()
+
+    def reset(self) -> None:
+        if self.runtime.brain is not None:
+            self.runtime.brain.reset()
+        self.orchestrator.reset()
+        self.sig_ticker.emit("DEBATE RESET - local candidate memory and state reset.")
 
     def _cleanup_once(self) -> None:
         if self._cleaned_up:
@@ -601,45 +746,21 @@ class DebateWorker(QThread):
         self._cleaned_up = True
 
         try:
-            if self.moderator is not None:
-                self.moderator.stop_timer()
+            self.lan.stop()
         except Exception:
             pass
 
         try:
-            self.checker.enabled = False
+            self.runtime.close()
         except Exception:
-            pass
-
-        try:
-            self.ears.stop()
-        except Exception:
-            pass
-
-        try:
-            self.speaker.stop()
-        except Exception:
-            pass
-
-        try:
-            if self._siskind_speaker is not None:
-                self._siskind_speaker.stop()
-        except Exception:
-            pass
-
-        try:
-            if self.brain_type == "qwen" and hasattr(self.brain, "qwen_brain"):
-                self.brain.qwen_brain.unload_model()
-        except Exception:
-            pass
+            logger.exception("Runtime cleanup failure")
 
 
 class DebateApp:
     """Wire selector, dashboard, and background worker."""
 
-    def __init__(self, persona: str):
+    def __init__(self):
         self.app = QApplication(sys.argv)
-        self.persona = persona
         self.worker: DebateWorker | None = None
         self.gui: DebateDashboard | None = None
         self.selector: DebateModeSelector | None = None
@@ -651,37 +772,33 @@ class DebateApp:
         if self.selector is not None:
             self.selector.close()
 
-        self.selector = DebateModeSelector(self.persona)
+        self.selector = DebateModeSelector()
         self.selector.mode_selected.connect(self._on_mode_selected)
         self.selector.show()
 
-    def _on_mode_selected(self, persona: str, brain_mode: str, voice_mode: str, run_mode: str) -> None:
-        self.persona = persona
-        os.environ["PERSONA"] = persona
-        mod_label = module_label(brain_mode, voice_mode, run_mode)
+    def _on_mode_selected(self, persona: str, brain_mode: str, voice_mode: str) -> None:
+        mod_label = module_label(brain_mode, voice_mode)
 
         logger.info(
-            "Mode selection persona=%s brain=%s voice=%s run=%s",
+            "Mode selection persona=%s brain=%s voice=%s",
             persona,
             brain_mode,
             voice_mode,
-            run_mode,
         )
 
         if self.selector is not None:
             self.selector.close()
 
-        self.gui = DebateDashboard(my_persona=self.persona, module_label=mod_label)
+        self.gui = DebateDashboard(local_persona=persona, module_label=mod_label)
         self.gui.sig_back_requested.connect(self._return_to_mode_selector)
         self.gui.keyPressEvent = self._on_key_press
         self.gui.show()
 
         try:
             self.worker = DebateWorker(
-                self.persona,
-                voice_mode,
+                persona=persona,
+                voice_mode=voice_mode,
                 brain_type=brain_mode,
-                run_mode=run_mode,
                 module_name=mod_label,
             )
         except Exception as exc:
@@ -709,8 +826,6 @@ class DebateApp:
             return
 
         self.worker.stop()
-
-        # Allow cooperative shutdown first.
         if not self.worker.wait(5000):
             logger.warning("Worker did not stop in 5s; forcing terminate")
             self.worker.terminate()
@@ -733,21 +848,14 @@ class DebateApp:
             return
 
         key = event.key()
-
-        if key == Qt.Key.Key_Space:
-            self.worker.force_speak()
-        elif key == Qt.Key.Key_M:
-            self.worker.trigger_moderator()
-        elif key == Qt.Key.Key_F:
+        if key == Qt.Key.Key_F:
             enabled = self.worker.checker.toggle()
             if self.gui is not None:
                 self.gui.add_ticker_message(f"FACT CHECKER: {'ON' if enabled else 'OFF'}")
         elif key == Qt.Key.Key_C:
             self.worker.sfx.play("applause", volume=0.6)
         elif key == Qt.Key.Key_R:
-            self.worker.brain.reset()
-            if self.gui is not None:
-                self.gui.add_ticker_message("DEBATE RESET - NEW ROUND STARTING")
+            self.worker.reset()
         elif key == Qt.Key.Key_Escape:
             self._stop_worker()
             self.app.quit()
@@ -762,11 +870,7 @@ class DebateApp:
 def main() -> int:
     setup_logging()
 
-    if MY_PERSONA not in ("trump", "biden"):
-        logger.error("Invalid persona '%s'. Set PERSONA=trump or PERSONA=biden", MY_PERSONA)
-        return 1
-
-    app = DebateApp(MY_PERSONA)
+    app = DebateApp()
     app.run()
     return 0
 

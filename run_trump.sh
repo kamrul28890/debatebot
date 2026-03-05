@@ -1,9 +1,9 @@
 #!/bin/bash
-# run_trump.sh — Mac/Linux launcher for Trump debate bot
+# run_trump.sh — Mac/Linux launcher for live DebateBot
 echo ""
 echo " =========================================="
-echo "  DEBATE NIGHT - TRUMP LAPTOP"
+echo "  DEBATEBOT - LIVE MODE"
 echo "  Purdue ECE49595NL / ECE59500NL"
 echo " =========================================="
 echo ""
-PERSONA=trump python src/main.py
+python src/main.py

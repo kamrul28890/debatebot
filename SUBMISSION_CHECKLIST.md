@@ -12,7 +12,7 @@ Use this checklist before each teammate submits the team zip.
 
 - Downloaded model weights (base/foundation models)
 - Trained model weights/checkpoints (`data/models/...`)
-- Local runtime caches (`data/xtts_cache`, `data/cache_sessions`, `.rag_cache`)
+- Local runtime caches (`data/xtts_cache`, `.rag_cache`)
 - Secrets (`keys.py`, `.env*`)
 
 ## External Asset Pointers
@@ -27,7 +27,7 @@ Use this checklist before each teammate submits the team zip.
 ```bash
 zip -r debatebot_submission.zip . \
   -x ".git/*" ".venv/*" "__pycache__/*" "*.pyc" \
-     "data/models/*" "data/cache_sessions/*" "data/xtts_cache/*" ".rag_cache/*" \
+     "data/models/*" "data/xtts_cache/*" ".rag_cache/*" \
      "keys.py" ".env" ".env.*"
 ```
 

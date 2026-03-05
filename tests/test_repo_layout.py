@@ -7,11 +7,13 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_core_files_exist() -> None:
     required = [
         ROOT / "src" / "main.py",
+        ROOT / "src" / "core" / "debate_orchestrator.py",
+        ROOT / "src" / "services" / "runtime.py",
+        ROOT / "src" / "infra" / "metrics.py",
         ROOT / "src" / "brain" / "model.py",
         ROOT / "scripts" / "doctor.py",
         ROOT / "scripts" / "finetune_qwen.py",
         ROOT / "scripts" / "setup_selected_mode.py",
-        ROOT / "scripts" / "prepare_debate_cache.py",
         ROOT / "requirements.txt",
         ROOT / "requirements-qwen.txt",
         ROOT / "requirements-xtts.txt",

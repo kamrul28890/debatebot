@@ -1,17 +1,13 @@
 """
 src/audio/sound_effects.py
 
-Crowd reaction sound effects engine.
-- Applause, laughter, booing, fact-check buzzer, fanfare
-- Triggered by keyword analysis of debate text
-- Non-blocking playback
+Crowd reaction sound effects engine (applause-only).
 """
 
 from __future__ import annotations
 
 import logging
 import os
-import random
 import threading
 
 
@@ -27,54 +23,12 @@ except Exception as exc:
     logger.warning("[SoundFX] pygame unavailable - sound effects disabled (%s)", exc)
 
 
-APPLAUSE_TRIGGERS = [
-    "american people",
-    "united states",
-    "freedom",
-    "democracy",
-    "constitution",
-    "veterans",
-    "military",
-    "god bless",
-    "thank you",
-    "together",
-    "history",
-]
-
-LAUGH_TRIGGERS = [
-    "believe me",
-    "nobody knew",
-    "the best",
-    "tremendous",
-    "malarkey",
-    "no joke",
-    "here's the deal",
-    "c'mon man",
-    "sleepy",
-    "witch hunt",
-    "perfect phone call",
-    "covfefe",
-]
-
-BOO_TRIGGERS = [
-    "fake news",
-    "radical left",
-    "open border",
-    "crime",
-    "disaster",
-    "terrible",
-    "worst ever",
-    "failed",
-    "corrupt",
-    "lies",
-]
-
-SISKIND_APPLAUSE = ["moving on", "gentlemen", "time is up", "next topic"]
-
-
 class SoundEffectsEngine:
     """
-    Analyze debate text and trigger crowd reactions asynchronously.
+    Applause-only sound effects.
+
+    Background auto reactions are intentionally disabled to keep sessions quiet.
+    Use `play('applause')` for explicit applause events.
     """
 
     SOUND_DIR = os.path.join(
@@ -83,16 +37,8 @@ class SoundEffectsEngine:
         "crowd_sounds",
     )
 
-    # Keys are logical sound ids. Values are canonical basename (without extension).
     SOUNDS = {
         "applause": "applause",
-        "laugh": "laugh",
-        "boo": "boo",
-        "buzzer": "buzzer",
-        "ding": "ding",
-        "fanfare": "fanfare",
-        "crickets": "crickets",
-        "drumroll": "drumroll",
     }
     SUPPORTED_EXTENSIONS = (".wav", ".ogg", ".oga", ".mp3")
 
@@ -105,43 +51,25 @@ class SoundEffectsEngine:
         self._load_sounds()
 
     def react_to_speech(self, text: str, speaker: str = "") -> None:
-        if not self.enabled:
-            return
-
-        text_lower = (text or "").lower()
-        if not text_lower:
-            return
-
-        if any(kw in text_lower for kw in BOO_TRIGGERS):
-            self.play("boo", volume=0.5)
-            return
-
-        if any(kw in text_lower for kw in LAUGH_TRIGGERS):
-            self.play("laugh", volume=0.6)
-            return
-
-        if any(kw in text_lower for kw in APPLAUSE_TRIGGERS):
-            self.play("applause", volume=0.7)
-            return
-
-        if speaker == "siskind" and any(kw in text_lower for kw in SISKIND_APPLAUSE):
-            self.play("applause", volume=0.3)
-            return
-
-        if random.random() < 0.1:
-            self.play("applause", volume=0.2)
+        # Disabled by design: no automatic background reactions.
+        return
 
     def play_fact_check_fail(self) -> None:
-        self.play("buzzer", volume=0.8)
+        # Disabled by request: applause-only profile.
+        return
 
     def play_fact_check_pass(self) -> None:
-        self.play("ding", volume=0.5)
+        # Disabled by request: applause-only profile.
+        return
 
     def play_opening_fanfare(self) -> None:
-        self.play("fanfare", volume=0.9)
+        # Disabled by request: applause-only profile.
+        return
 
     def play(self, sound_name: str, volume: float = 0.7) -> None:
         if not self.enabled or not self._audio_ready:
+            return
+        if sound_name != "applause":
             return
 
         import time

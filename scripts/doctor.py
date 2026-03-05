@@ -11,7 +11,6 @@ Examples:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib
 import json
 import os
@@ -90,8 +89,6 @@ def check_paths(report: DoctorReport) -> None:
         ROOT / "src" / "main.py",
         ROOT / "src" / "brain" / "model.py",
         ROOT / "scripts" / "finetune_qwen.py",
-        ROOT / "scripts" / "build_local_mode.py",
-        ROOT / "scripts" / "prepare_debate_cache.py",
         ROOT / "scripts" / "setup_selected_mode.py",
         ROOT / "keys_template.py",
     ]
@@ -240,42 +237,6 @@ def check_qwen_assets(report: DoctorReport) -> None:
             report.ok(f"Qwen adapter ready: {adapter_dir.relative_to(ROOT)}")
 
 
-def check_deterministic_cache_script(report: DoctorReport) -> None:
-    try:
-        from src.cache.deterministic import CACHE_VERSION, script_path
-
-        expected_version = CACHE_VERSION
-        path = script_path(ROOT)
-    except Exception:
-        expected_version = "unknown"
-        path = ROOT / "data" / "cache_sessions" / "deterministic_debate_v2.json"
-
-    if not path.exists():
-        report.warn(f"Deterministic cache script missing: {path.relative_to(ROOT)}")
-        return
-
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception as exc:
-        report.error(f"Deterministic cache script unreadable: {exc}")
-        return
-
-    script_version = payload.get("version", "unknown")
-    trump_lines = len(payload.get("trump", []))
-    biden_lines = len(payload.get("biden", []))
-    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    fingerprint = hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:12]
-    if expected_version != "unknown" and script_version != expected_version:
-        report.warn(
-            f"Deterministic cache is stale ({script_version}); expected {expected_version}. "
-            "Run scripts/prepare_debate_cache.py --force."
-        )
-    report.ok(
-        f"Deterministic cache script ready ({script_version}) | turns: trump={trump_lines}, "
-        f"biden={biden_lines} | sync fingerprint={fingerprint}"
-    )
-
-
 def check_xtts_cache(report: DoctorReport) -> None:
     cache_root = ROOT / "data" / "xtts_cache"
     for persona in ("trump", "biden", "siskind"):
@@ -356,7 +317,6 @@ def main() -> int:
     check_credentials(report, ci_mode=args.ci)
     check_persona_assets(report, xtts_enabled=args.xtts)
     check_crowd_sounds(report)
-    check_deterministic_cache_script(report)
 
     core_imports = [
         "openai",

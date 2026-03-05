@@ -176,8 +176,14 @@ class DebateListener:
                 if details.reason == speechsdk.CancellationReason.Error:
                     err_detail = str(details.error_details or "")
                     logger.warning("STT error details: %s", err_detail)
-                    if "SPXERR_START_RECOGNIZING_INVALID_STATE_TRANSITION" in err_detail:
-                        self._reset_recognizer("invalid state transition")
+                    lowered = err_detail.lower()
+                    if (
+                        "spxerr_start_recognizing_invalid_state_transition" in lowered
+                        or "could not validate speech context" in lowered
+                        or "error code: 1007" in lowered
+                    ):
+                        self._reset_recognizer("azure speech context/state error")
+                        time.sleep(0.25)
                 return ""
 
             return ""
