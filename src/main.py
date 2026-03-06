@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.core import DebateOrchestrator
+from src.core import DebateOrchestrator, RoundPlan
 from src.gui.dashboard import DebateDashboard
 from src.gui.voice_selector import DebateModeSelector
 from src.infra import DebateMetrics
@@ -141,7 +141,7 @@ class DebateWorker(QThread):
         default_listen_timeout = 18 if fast_combo else 12
         self._listen_timeout_seconds = _env_int("DEBATE_LISTEN_TIMEOUT_SECONDS", default_listen_timeout)
         self._opponent_followup_timeout_seconds = _env_int("DEBATE_OPPONENT_FOLLOWUP_TIMEOUT_SECONDS", 4)
-        self._opponent_end_confirm_timeout_seconds = _env_int("DEBATE_OPPONENT_END_CONFIRM_TIMEOUT_SECONDS", 2)
+        self._opponent_end_confirm_timeout_seconds = _env_int("DEBATE_OPPONENT_END_CONFIRM_TIMEOUT_SECONDS", 3)
         self._min_opponent_turn_seconds = _env_float("DEBATE_MIN_OPPONENT_TURN_SECONDS", 12.0, minimum=0.0)
         self._opponent_finish_event_wait_seconds = _env_float(
             "DEBATE_OPPONENT_FINISH_EVENT_WAIT_SECONDS",
@@ -150,7 +150,7 @@ class DebateWorker(QThread):
         )
         self._second_speaker_start_delay_seconds = _env_float(
             "DEBATE_SECOND_SPEAKER_START_DELAY_SECONDS",
-            1.2,
+            2.2,
             minimum=0.0,
         )
         self._moderator_echo_guard_seconds = _env_float("DEBATE_MODERATOR_ECHO_GUARD_SECONDS", 1.3, minimum=0.1)
@@ -182,6 +182,7 @@ class DebateWorker(QThread):
         self._recent_turn_texts: list[str] = []
         self._active_round_prompt = ""
         self._active_round_first_speaker = ""
+        self._prefetched_opponent_segment = ""
 
         self.checker = _NoopChecker()
         self.sfx = _NoopSfx()
@@ -266,7 +267,7 @@ class DebateWorker(QThread):
             if cue is None:
                 continue
 
-            plan = self.orchestrator.next_user_round(cue.prompt)
+            plan = self._resolve_round_plan(cue)
             self.sig_start_speaking.emit("moderator", cue.prompt)
             self.sig_stop_speaking.emit("moderator")
             self.sig_ticker.emit(
@@ -287,6 +288,26 @@ class DebateWorker(QThread):
             time.sleep(0.08)
 
         self.sig_ticker.emit("DEBATE COMPLETE: dual-laptop session finished.")
+
+    def _resolve_round_plan(self, cue: ModeratorCue) -> RoundPlan:
+        plan = self.orchestrator.next_user_round(cue.prompt)
+        forced_first = cue.first_speaker if cue.first_speaker in {"trump", "biden"} else plan.first_speaker
+        if forced_first == plan.first_speaker:
+            return plan
+
+        forced_second = DebateOrchestrator.other_persona(forced_first)
+        if not self.orchestrator.turn_available(forced_first):
+            if self.orchestrator.turn_available(forced_second):
+                forced_first, forced_second = forced_second, forced_first
+            else:
+                return plan
+
+        self.sig_ticker.emit(f"ROUTING OVERRIDE: honoring detected starter {forced_first.upper()}.")
+        return RoundPlan(
+            moderator_prompt=cue.prompt,
+            first_speaker=forced_first,
+            second_speaker=forced_second,
+        )
 
     def _wait_for_next_moderator_cue(self) -> ModeratorCue | None:
         ears = self.runtime.ears
@@ -324,6 +345,22 @@ class DebateWorker(QThread):
                 if not (self._is_startup_short_topic_cue(heard) or self._looks_like_moderator_prompt(heard)):
                     if self._is_recent_turn_echo(heard):
                         self.sig_ticker.emit("Ignored candidate echo while waiting for moderator cue.")
+                    elif self._looks_like_opponent_opening(heard):
+                        self._prefetched_opponent_segment = heard
+                        synthetic = self._cue_from_text(heard, source="audio_resync", listen_ms=listen_ms)
+                        cue = ModeratorCue(
+                            prompt=synthetic.prompt,
+                            first_speaker=self.remote_persona,
+                            round_id=synthetic.round_id,
+                            source=synthetic.source,
+                            ts=synthetic.ts,
+                            listen_ms=synthetic.listen_ms,
+                        )
+                        self._last_cue_ts = cue.ts
+                        self.sig_ticker.emit(
+                            f"AUDIO RESYNC: inferred round from opponent speech ({self.remote_persona.upper()} first)."
+                        )
+                        return cue
                     else:
                         self.sig_ticker.emit("Ignored non-moderator audio; waiting for moderator cue.")
                     continue
@@ -349,7 +386,9 @@ class DebateWorker(QThread):
     def _run_round(self, plan, cue: ModeratorCue) -> tuple[bool, ModeratorCue | None]:
         round_started_at = time.time()
         self._active_round_prompt = cue.prompt
-        self._active_round_first_speaker = cue.first_speaker
+        self._active_round_first_speaker = plan.first_speaker
+        prefetched_opponent_segment = " ".join((self._prefetched_opponent_segment or "").split())
+        self._prefetched_opponent_segment = ""
 
         try:
             if plan.first_speaker == self.persona:
@@ -366,6 +405,7 @@ class DebateWorker(QThread):
                 opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(
                     round_started_at=round_started_at,
                     expected_round_id=cue.round_id,
+                    prefetched_segment="",
                 )
                 if interrupt is not None:
                     return True, interrupt
@@ -380,6 +420,7 @@ class DebateWorker(QThread):
             opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(
                 round_started_at=round_started_at,
                 expected_round_id=cue.round_id,
+                prefetched_segment=prefetched_opponent_segment,
             )
             if interrupt is not None:
                 return True, interrupt
@@ -411,6 +452,7 @@ class DebateWorker(QThread):
         self,
         round_started_at: float,
         expected_round_id: str,
+        prefetched_segment: str = "",
     ) -> tuple[str, float, ModeratorCue | None]:
         ears = self.runtime.ears
         if ears is None:
@@ -421,6 +463,12 @@ class DebateWorker(QThread):
         awaiting_end_confirmation = False
         first_speech_ts: float | None = None
         floor_notice_sent = False
+
+        prefetched_clean = " ".join((prefetched_segment or "").split())
+        if prefetched_clean:
+            collected_segments.append(prefetched_clean)
+            first_speech_ts = time.time()
+            self.sig_ticker.emit("AUDIO RESYNC: captured opponent opener; waiting for full turn handoff.")
 
         while self._running and self.orchestrator.can_continue():
             cue = self._take_interrupt_cue(round_started_at)
@@ -728,6 +776,16 @@ class DebateWorker(QThread):
         return False
 
     @staticmethod
+    def _contains_candidate_reference(text: str) -> bool:
+        return bool(
+            re.search(
+                r"\b(trump|donald|biden|joe|mr\.?\s+(donald\s+)?trump|mr\.?\s+(joe\s+)?biden|president\s+(donald\s+)?trump|president\s+(joe\s+)?biden)\b",
+                text or "",
+                flags=re.IGNORECASE,
+            )
+        )
+
+    @staticmethod
     def _looks_like_moderator_prompt(text: str) -> bool:
         sample = " ".join((text or "").lower().split())
         if not sample:
@@ -811,7 +869,10 @@ class DebateWorker(QThread):
                 return True
 
         if "?" in sample and len(words) <= 45:
-            return True
+            if DebateWorker._contains_candidate_reference(sample):
+                return True
+            if re.search(r"\b(you|your)\b", sample):
+                return True
         return False
 
     @staticmethod
@@ -859,13 +920,55 @@ class DebateWorker(QThread):
             "do we",
             "can we",
         )
-        if "?" in sample and len(words) <= 24 and any(sample.startswith(prefix) for prefix in question_starters):
-            return True
+        starts_like_question = any(sample.startswith(prefix) for prefix in question_starters)
+        if starts_like_question:
+            explicit_address = DebateWorker._contains_candidate_reference(sample)
+            second_person = bool(re.search(r"\b(you|your)\b", sample))
+            collective_question = sample.startswith(("are we", "do we", "can we"))
 
-        if len(words) <= 16 and any(sample.startswith(prefix) for prefix in question_starters):
-            return True
+            if "?" in sample and len(words) <= 24 and (explicit_address or second_person or collective_question):
+                return True
+            if len(words) <= 16 and (explicit_address or second_person or collective_question):
+                return True
 
         return False
+
+    @staticmethod
+    def _looks_like_opponent_opening(text: str) -> bool:
+        sample = " ".join((text or "").lower().split())
+        if not sample:
+            return False
+
+        words = re.findall(r"[a-z0-9']+", sample)
+        if len(words) < 6:
+            return False
+
+        if DebateWorker._looks_like_moderator_prompt(sample):
+            return False
+
+        if re.search(r"\b(i|we|my|our)\b", sample):
+            return True
+
+        if re.search(r"\b(look[, ]+folks|here'?s the deal|let me tell you|c['’]?mon man|everybody knows it)\b", sample):
+            return True
+
+        policy_terms = (
+            "economy",
+            "inflation",
+            "jobs",
+            "tax",
+            "trade",
+            "immigration",
+            "border",
+            "healthcare",
+            "security",
+            "iran",
+            "ukraine",
+            "nato",
+            "china",
+        )
+        topic_hits = sum(1 for token in policy_terms if token in sample)
+        return topic_hits >= 2
 
     def _is_startup_short_topic_cue(self, text: str) -> bool:
         # Allow one-word moderator topic kickoffs only before first recorded turn.
