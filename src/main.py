@@ -138,6 +138,7 @@ class DebateWorker(QThread):
         self._startup_messages: list[str] = []
 
         self._listen_timeout_seconds = _env_int("DEBATE_LISTEN_TIMEOUT_SECONDS", 18)
+        self._opponent_followup_timeout_seconds = _env_int("DEBATE_OPPONENT_FOLLOWUP_TIMEOUT_SECONDS", 4)
         self._target_turn_seconds = _env_float("DEBATE_TARGET_SECONDS_PER_TURN", 30.0, minimum=10.0)
         self._speech_words_per_second = _env_float("DEBATE_WORDS_PER_SECOND", 2.1, minimum=1.0)
         self._max_turns_per_persona = _env_int("DEBATE_MAX_TURNS_PER_PERSONA", 8)
@@ -211,7 +212,8 @@ class DebateWorker(QThread):
             f"turns/persona: {self._max_turns_per_persona} | "
             f"target turn: ~{int(self._target_turn_seconds)}s "
             f"({self._turn_min_words}-{self._turn_max_words} words) | "
-            f"listen timeout: {self._listen_timeout_seconds}s"
+            f"listen timeout: {self._listen_timeout_seconds}s | "
+            f"opponent follow-up: {self._opponent_followup_timeout_seconds}s"
         )
         self._startup_messages.append(
             "SYNC POLICY: audio-first moderation/opponent detection; LAN cue/turn fallback enabled."
@@ -312,7 +314,7 @@ class DebateWorker(QThread):
                 return True, outcome.interrupt_cue
 
             self.orchestrator.begin_second_speaker()
-            opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(round_started_at, cue.round_id)
+            opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(round_started_at)
             if interrupt is not None:
                 return True, interrupt
             if opponent_text:
@@ -322,7 +324,7 @@ class DebateWorker(QThread):
             return False, None
 
         # Remote speaks first.
-        opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(round_started_at, cue.round_id)
+        opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(round_started_at)
         if interrupt is not None:
             return True, interrupt
         if opponent_text:
@@ -341,10 +343,13 @@ class DebateWorker(QThread):
         self.orchestrator.finish_round()
         return False, None
 
-    def _wait_for_opponent_turn(self, round_started_at: float, round_id: str) -> tuple[str, float, ModeratorCue | None]:
+    def _wait_for_opponent_turn(self, round_started_at: float) -> tuple[str, float, ModeratorCue | None]:
         ears = self.runtime.ears
         if ears is None:
             return "", 0.0, None
+
+        collected_segments: list[str] = []
+        total_listen_ms = 0.0
 
         while self._running and self.orchestrator.can_continue():
             cue = self._take_interrupt_cue(round_started_at)
@@ -352,10 +357,41 @@ class DebateWorker(QThread):
                 self.sig_ticker.emit("INTERRUPT: new moderator cue received (LAN).")
                 return "", 0.0, cue
 
+            # Accept remote completion as authoritative handoff; round_id may differ
+            # when both machines hear moderator audio independently.
+            fallback = self._take_lan_event(
+                lambda e: (
+                    e.get("type") == "speaker_finished"
+                    and e.get("persona") == self.remote_persona
+                    and float(e.get("ts", 0.0)) >= (round_started_at - 0.1)
+                )
+            )
+            if fallback:
+                payload_text = " ".join(str(fallback.get("text", "")).split())
+                if payload_text:
+                    if collected_segments:
+                        local_audio_text = " ".join(collected_segments).strip()
+                        if len(payload_text.split()) >= len(local_audio_text.split()):
+                            self.sig_ticker.emit("SYNC FALLBACK: using LAN opponent turn payload.")
+                            return payload_text, total_listen_ms, None
+                        merged = " ".join([local_audio_text, payload_text]).strip()
+                        self.sig_ticker.emit("SYNC FALLBACK: merging audio+LAN opponent payload.")
+                        return merged, total_listen_ms, None
+                    self.sig_ticker.emit("SYNC FALLBACK: using LAN opponent turn payload.")
+                    return payload_text, total_listen_ms, None
+                if collected_segments:
+                    return " ".join(collected_segments).strip(), total_listen_ms, None
+
             self.sig_set_listening.emit(self.persona)
+            timeout_seconds = (
+                self._listen_timeout_seconds
+                if not collected_segments
+                else self._opponent_followup_timeout_seconds
+            )
             started = time.monotonic()
-            heard = ears.listen_for_turn(timeout_seconds=self._listen_timeout_seconds)
+            heard = ears.listen_for_turn(timeout_seconds=timeout_seconds)
             listen_ms = (time.monotonic() - started) * 1000.0
+            total_listen_ms += listen_ms
             heard = " ".join((heard or "").split())
 
             if heard:
@@ -365,20 +401,19 @@ class DebateWorker(QThread):
                     self._publish_moderator_cue(cue)
                     self.sig_ticker.emit("INTERRUPT: new moderator cue received (audio).")
                     return "", listen_ms, cue
-                return heard, listen_ms, None
 
-            fallback = self._take_lan_event(
-                lambda e: (
-                    e.get("type") == "speaker_finished"
-                    and e.get("persona") == self.remote_persona
-                    and str(e.get("round_id", "")) == round_id
-                    and float(e.get("ts", 0.0)) >= (round_started_at - 1.0)
-                )
-            )
-            if fallback:
-                text = " ".join(str(fallback.get("text", "")).split())
-                self.sig_ticker.emit("SYNC FALLBACK: using LAN opponent turn payload.")
-                return text, 0.0, None
+                if not collected_segments or heard != collected_segments[-1]:
+                    collected_segments.append(heard)
+                if len(collected_segments) == 1:
+                    self.sig_ticker.emit(
+                        f"OPPONENT {self.remote_persona.upper()} speaking... waiting for full turn handoff."
+                    )
+                continue
+
+            # If we already captured speech and then hit a no-speech window,
+            # treat that as end-of-turn in audio-first mode.
+            if collected_segments:
+                return " ".join(collected_segments).strip(), total_listen_ms, None
 
         return "", 0.0, None
 
@@ -534,11 +569,24 @@ class DebateWorker(QThread):
         )
 
     @staticmethod
-    def _split_for_speech(text: str) -> list[str]:
+    def _split_for_speech(text: str, max_chars: int = 220) -> list[str]:
         sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
         if not sentences:
             return [text]
-        return sentences
+
+        chunks: list[str] = []
+        current = ""
+        for sentence in sentences:
+            candidate = f"{current} {sentence}".strip() if current else sentence
+            if current and len(candidate) > max_chars:
+                chunks.append(current)
+                current = sentence
+            else:
+                current = candidate
+
+        if current:
+            chunks.append(current)
+        return chunks if chunks else [text]
 
     @staticmethod
     def _looks_like_moderator_cue(text: str) -> bool:

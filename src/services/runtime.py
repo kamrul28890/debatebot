@@ -72,8 +72,8 @@ class DebateRuntime:
                 f"Voice fallback active for {self.local_persona.upper()}: XTTS unavailable; using Azure TTS."
             )
 
-        # Shorter initial silence helps polling loops and LAN fallback checks.
-        self.ears = DebateListener(silence_timeout_ms=1100, initial_silence_timeout_ms=2600)
+        # Slightly longer silence windows reduce premature end-of-turn detection.
+        self.ears = DebateListener(silence_timeout_ms=1800, initial_silence_timeout_ms=3200)
         self.sfx = SoundEffectsEngine()
 
         try:
