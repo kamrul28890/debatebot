@@ -9,6 +9,7 @@ Azure Speech-to-Text listener, Mac-optimized.
 
 import logging
 import os
+import re
 import time
 import threading
 
@@ -35,15 +36,19 @@ class DebateListener:
         # Cap one utterance length so recognize_once doesn't wait forever on near-continuous audio.
         self._segmentation_max_ms = _env_int("DEBATE_STT_SEGMENTATION_MAX_MS", 25000)
         self._end_silence_timeout_ms = _env_int("DEBATE_STT_END_SILENCE_MS", 700)
+        self._recognition_language = os.getenv("DEBATE_STT_LANGUAGE", "en-US").strip() or "en-US"
+        self._phrase_hints = self._build_phrase_hints()
         self._recognizer_lock = threading.Lock()
         self._listen_lock = threading.Lock()
         self.recognizer = self._build_recognizer()
         logger.info(
-            "STT config: initial_silence=%sms segmentation_silence=%sms segmentation_max=%sms end_silence=%sms",
+            "STT config: language=%s initial_silence=%sms segmentation_silence=%sms segmentation_max=%sms end_silence=%sms phrase_hints=%s",
+            self._recognition_language,
             self._initial_silence_timeout_ms,
             self._silence_timeout_ms,
             self._segmentation_max_ms,
             self._end_silence_timeout_ms,
+            len(self._phrase_hints),
         )
 
         # ── Echo suppression state ─────────────────────────────────────────────
@@ -56,6 +61,7 @@ class DebateListener:
             subscription=settings.azure_speech_key,
             region=settings.azure_speech_region,
         )
+        speech_config.speech_recognition_language = self._recognition_language
 
         # ── Silence detection tuning ───────────────────────────────────────────
         speech_config.set_property(
@@ -77,10 +83,57 @@ class DebateListener:
 
         # ── Use MacBook default microphone ─────────────────────────────────────
         audio_config = speechsdk.audio.AudioConfig(use_default_microphone=True)
-        return speechsdk.SpeechRecognizer(
+        recognizer = speechsdk.SpeechRecognizer(
             speech_config=speech_config,
             audio_config=audio_config,
         )
+        self._attach_phrase_hints(recognizer)
+        return recognizer
+
+    def _attach_phrase_hints(self, recognizer: speechsdk.SpeechRecognizer) -> None:
+        if not self._phrase_hints:
+            return
+        try:
+            grammar = speechsdk.PhraseListGrammar.from_recognizer(recognizer)
+            add_phrase = getattr(grammar, "addPhrase", None) or getattr(grammar, "add_phrase", None)
+            if not callable(add_phrase):
+                return
+            for phrase in self._phrase_hints:
+                add_phrase(phrase)
+        except Exception as exc:
+            logger.debug("STT phrase-hint attach skipped: %s", exc)
+
+    def _build_phrase_hints(self) -> list[str]:
+        hints = [
+            "Mr Trump",
+            "President Trump",
+            "Donald Trump",
+            "Trump first",
+            "Start with Trump",
+            "Mr Biden",
+            "President Biden",
+            "Joe Biden",
+            "Biden first",
+            "Start with Biden",
+            "Moderator",
+        ]
+
+        raw_extra = os.getenv("DEBATE_STT_PHRASE_HINTS", "").strip()
+        if raw_extra:
+            for token in re.split(r"[|,;]", raw_extra):
+                clean = token.strip()
+                if clean:
+                    hints.append(clean)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for phrase in hints:
+            key = phrase.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(phrase)
+        return deduped
 
     def _reset_recognizer(self, reason: str) -> None:
         logger.warning("Resetting STT recognizer: %s", reason)
