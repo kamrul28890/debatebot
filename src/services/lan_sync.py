@@ -8,23 +8,51 @@ import socket
 import threading
 import time
 import uuid
+import importlib
+
+
+def _from_keys(attr: str):
+    try:
+        keys = importlib.import_module("keys")
+    except Exception:
+        return None
+    return getattr(keys, attr, None)
 
 
 class LanSyncBus:
     def __init__(self):
-        self.channel = os.getenv("DEBATE_LAN_CHANNEL", "debatebot-dual-v1")
-        self.port = int(os.getenv("DEBATE_LAN_PORT", "46883"))
-        self.broadcast_host = os.getenv("DEBATE_LAN_BROADCAST", "255.255.255.255")
-        raw_peers = os.getenv("DEBATE_LAN_PEERS", "").strip()
+        self.channel = (
+            os.getenv("DEBATE_LAN_CHANNEL")
+            or _from_keys("debate_lan_channel")
+            or "debatebot-dual-v1"
+        )
+        port_raw = os.getenv("DEBATE_LAN_PORT") or _from_keys("debate_lan_port") or "46883"
+        try:
+            self.port = int(str(port_raw).strip())
+        except ValueError:
+            self.port = 46883
+        self.broadcast_host = (
+            os.getenv("DEBATE_LAN_BROADCAST")
+            or _from_keys("debate_lan_broadcast")
+            or "255.255.255.255"
+        )
+        raw_peers = (os.getenv("DEBATE_LAN_PEERS") or _from_keys("debate_lan_peers") or "").strip()
         self.peer_hosts = [host.strip() for host in raw_peers.split(",") if host.strip()]
+        try:
+            heartbeat = float(os.getenv("DEBATE_LAN_HEARTBEAT_SECONDS", "1.5"))
+        except ValueError:
+            heartbeat = 1.5
+        self._heartbeat_seconds = max(0.5, heartbeat)
         self.sender_id = str(uuid.uuid4())
 
         self._send_sock: socket.socket | None = None
         self._recv_sock: socket.socket | None = None
         self._lock = threading.Lock()
         self._events: list[dict] = []
+        self._peer_last_seen: dict[str, float] = {}
         self._running = False
         self._thread: threading.Thread | None = None
+        self._heartbeat_thread: threading.Thread | None = None
 
     def start(self) -> None:
         if self._running:
@@ -44,6 +72,8 @@ class LanSyncBus:
 
         self._thread = threading.Thread(target=self._listen_loop, daemon=True)
         self._thread.start()
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
 
     def stop(self) -> None:
         self._running = False
@@ -51,6 +81,10 @@ class LanSyncBus:
         if self._thread is not None:
             self._thread.join(timeout=1.0)
             self._thread = None
+
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=1.0)
+            self._heartbeat_thread = None
 
         if self._recv_sock is not None:
             try:
@@ -91,6 +125,18 @@ class LanSyncBus:
             self._events.clear()
             return events
 
+    def connection_snapshot(self, timeout_seconds: float = 6.0) -> dict:
+        now = time.time()
+        timeout = max(0.5, float(timeout_seconds))
+        with self._lock:
+            recent = [sid for sid, ts in self._peer_last_seen.items() if (now - ts) <= timeout]
+            last_seen = max(self._peer_last_seen.values()) if self._peer_last_seen else 0.0
+        return {
+            "running": self._running,
+            "recent_peer_count": len(recent),
+            "last_peer_seen_age_s": (now - last_seen) if last_seen else None,
+        }
+
     def _listen_loop(self) -> None:
         sock = self._recv_sock
         if sock is None:
@@ -117,7 +163,20 @@ class LanSyncBus:
             # Local receive timestamp avoids cross-device clock-skew issues.
             payload["_recv_ts"] = time.time()
             with self._lock:
+                sender = str(payload.get("sender_id", "")).strip()
+                if sender:
+                    self._peer_last_seen[sender] = payload["_recv_ts"]
+                    if len(self._peer_last_seen) > 64:
+                        # Keep map bounded.
+                        recent = sorted(self._peer_last_seen.items(), key=lambda item: item[1], reverse=True)[:32]
+                        self._peer_last_seen = dict(recent)
                 self._events.append(payload)
                 # Keep queue bounded.
                 if len(self._events) > 300:
                     self._events = self._events[-150:]
+
+    def _heartbeat_loop(self) -> None:
+        # Heartbeats keep peer liveness visible in UI and speed fallback readiness.
+        while self._running:
+            self.publish("heartbeat")
+            time.sleep(self._heartbeat_seconds)

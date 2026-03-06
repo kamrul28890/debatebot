@@ -413,6 +413,7 @@ class DebateDashboard(QWidget):
         self.local_persona = local_persona if local_persona in {"trump", "biden"} else "trump"
         self.remote_persona = "biden" if self.local_persona == "trump" else "trump"
         self.module_label = module_label or "AZURE + ROBOTIC VOICE | DUAL-LAPTOP LIVE"
+        self._sync_state = "searching"
 
         self._setup_window()
         self._build_ui()
@@ -559,6 +560,12 @@ class DebateDashboard(QWidget):
         )
         row.addWidget(module_label)
 
+        self.sync_status_label = QLabel("LAN SEARCHING")
+        self.sync_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.sync_status_label.setMinimumWidth(180)
+        row.addWidget(self.sync_status_label)
+        self.set_sync_status("searching", "LAN FAILSAFE SEARCHING")
+
         row.addStretch()
 
         title = QLabel("AI PRESIDENTIAL DEBATE")
@@ -632,6 +639,33 @@ class DebateDashboard(QWidget):
 
     def add_ticker_message(self, text: str) -> None:
         self.ticker.add_message(text)
+
+    def set_sync_status(self, state: str, detail: str) -> None:
+        state_key = (state or "searching").lower().strip()
+        palette = {
+            "connected": ("#1a2c22", "#79d49f", "LAN CONNECTED"),
+            "searching": ("#2d2414", "#f0c56a", "LAN SEARCHING"),
+            "disabled": ("#222834", "#9aa7bc", "LAN OFF"),
+            "error": ("#351818", "#ef8a8a", "LAN ERROR"),
+        }
+        bg, fg, default_text = palette.get(state_key, palette["searching"])
+        label_text = default_text if not detail else detail.upper()
+        self.sync_status_label.setText(label_text)
+        self.sync_status_label.setStyleSheet(
+            f"""
+            QLabel {{
+                color: {fg};
+                background-color: {bg};
+                border: 1px solid #60738c;
+                border-radius: 6px;
+                padding: 3px 8px;
+                font-size: 10px;
+                font-family: {_MONO};
+                font-weight: 700;
+            }}
+            """
+        )
+        self._sync_state = state_key
 
     def _display_name(self, persona: str) -> str:
         names = {

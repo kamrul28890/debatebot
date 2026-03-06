@@ -130,6 +130,7 @@ class DebateWorker(QThread):
     sig_set_thinking = pyqtSignal(str)
     sig_fact_check = pyqtSignal(str, str, str)
     sig_ticker = pyqtSignal(str)
+    sig_sync_status = pyqtSignal(str, str)
 
     def __init__(
         self,
@@ -187,6 +188,8 @@ class DebateWorker(QThread):
         self._lan_enabled = _env_bool("DEBATE_ENABLE_LAN_FAILSAFE", True)
         self._lan_takeover_delay_seconds = _env_float("DEBATE_LAN_CUE_TAKEOVER_DELAY_SECONDS", 1.2, minimum=0.0)
         self._lan_poll_timeout_seconds = _env_float("DEBATE_LAN_POLL_TIMEOUT_SECONDS", 8.0, minimum=0.5)
+        self._lan_peer_timeout_seconds = _env_float("DEBATE_LAN_PEER_TIMEOUT_SECONDS", 6.0, minimum=1.0)
+        self._sync_status_emit_interval_seconds = _env_float("DEBATE_SYNC_STATUS_EMIT_INTERVAL_SECONDS", 0.8, minimum=0.2)
         self.lan = LanSyncBus() if self._lan_enabled else None
         self._lan_backlog: list[dict] = []
         self._last_cue_ts = 0.0
@@ -196,6 +199,8 @@ class DebateWorker(QThread):
         self._active_round_prompt = ""
         self._active_round_first_speaker = ""
         self._prefetched_opponent_segment = ""
+        self._last_sync_status_key = ""
+        self._last_sync_status_emit_at = 0.0
 
         self.checker = _NoopChecker()
         self.sfx = _NoopSfx()
@@ -231,6 +236,7 @@ class DebateWorker(QThread):
 
         if self._lan_enabled and self.lan is not None:
             self.lan.start()
+        self._emit_sync_status(force=True)
 
         if self.runtime.checker is not None:
             self.checker = self.runtime.checker
@@ -342,6 +348,7 @@ class DebateWorker(QThread):
             return None
 
         while self._running and self.orchestrator.can_continue():
+            self._emit_sync_status()
             # Brief guard right after a round to avoid trailing candidate audio
             # being mistaken for a new moderator cue.
             if self._last_round_finished_ts > 0:
@@ -518,6 +525,7 @@ class DebateWorker(QThread):
             self.sig_ticker.emit("AUDIO RESYNC: captured opponent opener; waiting for full turn handoff.")
 
         while self._running and self.orchestrator.can_continue():
+            self._emit_sync_status()
             cue = self._take_interrupt_cue(round_started_at)
             if cue is not None:
                 self.sig_ticker.emit("INTERRUPT: new moderator cue received (LAN).")
@@ -1310,12 +1318,43 @@ class DebateWorker(QThread):
         shared = len(a_tokens & b_tokens)
         return shared / float(max(1, min(len(a_tokens), len(b_tokens))))
 
+    def _emit_sync_status(self, force: bool = False) -> None:
+        now = time.time()
+        if not force and (now - self._last_sync_status_emit_at) < self._sync_status_emit_interval_seconds:
+            return
+
+        if not self._lan_enabled:
+            state, detail = "disabled", "LAN FAILSAFE OFF"
+        elif self.lan is None:
+            state, detail = "error", "LAN FAILSAFE UNAVAILABLE"
+        else:
+            snapshot = self.lan.connection_snapshot(timeout_seconds=self._lan_peer_timeout_seconds)
+            peers = int(snapshot.get("recent_peer_count", 0))
+            if peers > 0:
+                state = "connected"
+                detail = f"LAN FAILSAFE CONNECTED ({peers} peer{'s' if peers != 1 else ''})"
+            else:
+                state = "searching"
+                detail = "LAN FAILSAFE SEARCHING"
+
+        key = f"{state}|{detail}"
+        if force or key != self._last_sync_status_key:
+            self.sig_sync_status.emit(state, detail)
+            self._last_sync_status_key = key
+        self._last_sync_status_emit_at = now
+
     def _refresh_lan_backlog(self) -> None:
         if not self._lan_enabled or self.lan is None:
             return
         events = self.lan.drain_events()
         if events:
-            self._lan_backlog.extend(events)
+            relevant = [
+                event
+                for event in events
+                if event.get("type") in {"moderator_cue", "speaker_finished"}
+            ]
+            if relevant:
+                self._lan_backlog.extend(relevant)
 
     def _take_lan_event(self, predicate) -> dict | None:
         if not self._lan_enabled:
@@ -1515,6 +1554,7 @@ class DebateApp:
         self.worker.sig_set_thinking.connect(self.gui.set_thinking)
         self.worker.sig_fact_check.connect(self.gui.show_fact_check)
         self.worker.sig_ticker.connect(self.gui.add_ticker_message)
+        self.worker.sig_sync_status.connect(self.gui.set_sync_status)
         self.worker.start()
 
     def _stop_worker(self) -> None:

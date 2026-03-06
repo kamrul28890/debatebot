@@ -34,3 +34,18 @@ azure_endpoint = "https://YOUR_REGION.api.cognitive.microsoft.com/"
 azure_tts_voice_trump = ""
 azure_tts_voice_biden = ""
 azure_tts_voice_siskind = ""
+
+# --- Optional dual-laptop LAN failsafe metadata sync ---
+# Usually auto-discovered on same LAN via broadcast.
+# If your network blocks broadcast (common on campus Wi-Fi), set peer IPs:
+#   debate_lan_peers = "192.168.1.12"                  # one peer
+#   debate_lan_peers = "192.168.1.12,192.168.1.13"     # multiple peers
+#
+# Optional overrides:
+#   debate_lan_channel = "debatebot-dual-v1"
+#   debate_lan_port = "46883"
+#   debate_lan_broadcast = "255.255.255.255"
+debate_lan_peers = ""
+debate_lan_channel = "debatebot-dual-v1"
+debate_lan_port = "46883"
+debate_lan_broadcast = "255.255.255.255"
