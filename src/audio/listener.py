@@ -38,17 +38,19 @@ class DebateListener:
         self._end_silence_timeout_ms = _env_int("DEBATE_STT_END_SILENCE_MS", 700)
         self._recognition_language = os.getenv("DEBATE_STT_LANGUAGE", "en-US").strip() or "en-US"
         self._phrase_hints = self._build_phrase_hints()
+        self._short_utterance_allowlist = self._build_short_utterance_allowlist()
         self._recognizer_lock = threading.Lock()
         self._listen_lock = threading.Lock()
         self.recognizer = self._build_recognizer()
         logger.info(
-            "STT config: language=%s initial_silence=%sms segmentation_silence=%sms segmentation_max=%sms end_silence=%sms phrase_hints=%s",
+            "STT config: language=%s initial_silence=%sms segmentation_silence=%sms segmentation_max=%sms end_silence=%sms phrase_hints=%s short_hints=%s",
             self._recognition_language,
             self._initial_silence_timeout_ms,
             self._silence_timeout_ms,
             self._segmentation_max_ms,
             self._end_silence_timeout_ms,
             len(self._phrase_hints),
+            len(self._short_utterance_allowlist),
         )
 
         # ── Echo suppression state ─────────────────────────────────────────────
@@ -134,6 +136,41 @@ class DebateListener:
             seen.add(key)
             deduped.append(phrase)
         return deduped
+
+    def _build_short_utterance_allowlist(self) -> set[str]:
+        tokens = {
+            "economy",
+            "inflation",
+            "jobs",
+            "taxes",
+            "trade",
+            "immigration",
+            "border",
+            "healthcare",
+            "security",
+            "climate",
+            "energy",
+            "education",
+            "ukraine",
+            "russia",
+            "china",
+            "iran",
+            "trump",
+            "biden",
+            "donald",
+            "joe",
+        }
+        raw_extra = os.getenv("DEBATE_STT_SHORT_HINTS", "").strip()
+        if raw_extra:
+            for token in re.split(r"[|,;]", raw_extra):
+                clean = re.sub(r"[^a-z0-9]+", "", token.lower())
+                if clean:
+                    tokens.add(clean)
+        return tokens
+
+    def _is_allowed_short_utterance(self, text: str) -> bool:
+        words = re.findall(r"[a-z0-9]+", (text or "").lower())
+        return len(words) == 1 and words[0] in self._short_utterance_allowlist
 
     def _reset_recognizer(self, reason: str) -> None:
         logger.warning("Resetting STT recognizer: %s", reason)
@@ -241,7 +278,8 @@ class DebateListener:
                 logger.info("Heard: %s", text)
 
                 # Basic sanity filter — ignore very short noise artifacts
-                if len(text.split()) < 2:
+                # except explicit one-word moderator/topic cues (e.g. "economy").
+                if len(text.split()) < 2 and not self._is_allowed_short_utterance(text):
                     logger.debug("Speech too short, ignoring")
                     return ""
 

@@ -305,7 +305,7 @@ class DebateWorker(QThread):
             listen_ms = (time.monotonic() - started) * 1000.0
             heard = " ".join((heard or "").split())
             if heard:
-                if not self._looks_like_moderator_prompt(heard):
+                if not (self._is_startup_short_topic_cue(heard) or self._looks_like_moderator_prompt(heard)):
                     if self._is_recent_turn_echo(heard):
                         self.sig_ticker.emit("Ignored candidate echo while waiting for moderator cue.")
                     else:
@@ -718,6 +718,9 @@ class DebateWorker(QThread):
         if re.search(r"\b(mr\.?\s+trump|mr\.?\s+biden|president\s+trump|president\s+biden)\b", sample):
             return True
 
+        if sample.startswith(("welcome", "welcome to", "good evening", "tonight")) and "debate" in sample:
+            return True
+
         topical_starters = (
             "lets ",
             "let's ",
@@ -782,8 +785,10 @@ class DebateWorker(QThread):
             return False
 
         words = sample.split()
-        if len(words) <= 1:
+        if not words:
             return False
+        if len(words) == 1:
+            return words[0] in {"trump", "donald", "biden", "joe", "next"}
 
         if sample.startswith(("next question", "new question", "next topic")):
             return True
@@ -825,6 +830,37 @@ class DebateWorker(QThread):
             return True
 
         return False
+
+    def _is_startup_short_topic_cue(self, text: str) -> bool:
+        # Allow one-word moderator topic kickoffs only before first recorded turn.
+        # This avoids regressing into "always-listening" when user says just "Economy."
+        if self._recent_turn_texts:
+            return False
+        words = re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(words) != 1:
+            return False
+        return words[0] in {
+            "economy",
+            "inflation",
+            "jobs",
+            "taxes",
+            "trade",
+            "immigration",
+            "border",
+            "healthcare",
+            "security",
+            "climate",
+            "energy",
+            "education",
+            "ukraine",
+            "russia",
+            "china",
+            "iran",
+            "trump",
+            "biden",
+            "donald",
+            "joe",
+        }
 
     def _cue_from_text(self, text: str, source: str, listen_ms: float = 0.0) -> ModeratorCue:
         cleaned = " ".join((text or "").split())
