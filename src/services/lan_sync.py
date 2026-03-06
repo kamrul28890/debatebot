@@ -15,6 +15,8 @@ class LanSyncBus:
         self.channel = os.getenv("DEBATE_LAN_CHANNEL", "debatebot-dual-v1")
         self.port = int(os.getenv("DEBATE_LAN_PORT", "46883"))
         self.broadcast_host = os.getenv("DEBATE_LAN_BROADCAST", "255.255.255.255")
+        raw_peers = os.getenv("DEBATE_LAN_PEERS", "").strip()
+        self.peer_hosts = [host.strip() for host in raw_peers.split(",") if host.strip()]
         self.sender_id = str(uuid.uuid4())
 
         self._send_sock: socket.socket | None = None
@@ -76,10 +78,12 @@ class LanSyncBus:
             **payload,
         }
         raw = json.dumps(message, ensure_ascii=True).encode("utf-8")
-        try:
-            self._send_sock.sendto(raw, (self.broadcast_host, self.port))
-        except Exception:
-            pass
+        targets = [(self.broadcast_host, self.port)] + [(host, self.port) for host in self.peer_hosts]
+        for target in targets:
+            try:
+                self._send_sock.sendto(raw, target)
+            except Exception:
+                continue
 
     def drain_events(self) -> list[dict]:
         with self._lock:

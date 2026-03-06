@@ -68,6 +68,17 @@ def _env_float(name: str, default: float, minimum: float = 0.1) -> float:
     return max(minimum, value)
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    if raw in {"1", "true", "yes", "on", "y"}:
+        return True
+    if raw in {"0", "false", "no", "off", "n"}:
+        return False
+    return default
+
+
 def module_label(brain_mode: str, voice_mode: str) -> str:
     brain = "QWEN" if brain_mode == "qwen" else "AZURE"
     voice = "VOICE CLONING" if voice_mode == "xtts" else "ROBOTIC VOICE"
@@ -172,8 +183,10 @@ class DebateWorker(QThread):
         self.orchestrator = DebateOrchestrator(max_turns_per_persona=self._max_turns_per_persona)
         self.metrics = DebateMetrics()
 
-        # User requested audio-only synchronization (no LAN fallback/interruption paths).
-        self._lan_enabled = False
+        # Audio remains primary; LAN metadata acts as a failsafe handoff/cue channel.
+        self._lan_enabled = _env_bool("DEBATE_ENABLE_LAN_FAILSAFE", True)
+        self._lan_takeover_delay_seconds = _env_float("DEBATE_LAN_CUE_TAKEOVER_DELAY_SECONDS", 1.2, minimum=0.0)
+        self._lan_poll_timeout_seconds = _env_float("DEBATE_LAN_POLL_TIMEOUT_SECONDS", 8.0, minimum=0.5)
         self.lan = LanSyncBus() if self._lan_enabled else None
         self._lan_backlog: list[dict] = []
         self._last_cue_ts = 0.0
@@ -243,11 +256,14 @@ class DebateWorker(QThread):
             f"min opponent turn: {self._min_opponent_turn_seconds:.0f}s | "
             f"finish-event wait: {self._opponent_finish_event_wait_seconds:.1f}s | "
             f"second-speaker delay: {self._second_speaker_start_delay_seconds:.1f}s | "
-            f"moderator echo guard: {self._moderator_echo_guard_seconds:.1f}s"
+            f"moderator echo guard: {self._moderator_echo_guard_seconds:.1f}s | "
+            f"LAN takeover delay: {self._lan_takeover_delay_seconds:.1f}s | "
+            f"LAN poll timeout: {self._lan_poll_timeout_seconds:.1f}s"
         )
-        self._startup_messages.append(
-            "SYNC POLICY: audio-only moderation/opponent detection; LAN sync disabled."
-        )
+        if self._lan_enabled:
+            self._startup_messages.append("SYNC POLICY: audio-primary + LAN metadata failsafe enabled.")
+        else:
+            self._startup_messages.append("SYNC POLICY: audio-only moderation/opponent detection; LAN sync disabled.")
         self._startup_messages.extend(result.startup_messages)
 
         bootstrap_ms = (time.monotonic() - started) * 1000.0
@@ -334,11 +350,28 @@ class DebateWorker(QThread):
                     time.sleep(0.08)
                     continue
 
+            if self._lan_enabled:
+                takeover_event = self._take_lan_event(
+                    lambda e: (
+                        e.get("type") == "moderator_cue"
+                        and self._event_ts(e) > self._last_cue_ts
+                        and (time.time() - self._event_ts(e)) >= self._lan_takeover_delay_seconds
+                    )
+                )
+                if takeover_event:
+                    cue = self._cue_from_event(takeover_event, source="lan")
+                    self._last_cue_ts = cue.ts
+                    self.sig_ticker.emit("SYNC FALLBACK: accepted moderator cue from LAN.")
+                    return cue
+
             self.sig_set_listening.emit("moderator")
 
             # Priority 1: audio capture.
             started = time.monotonic()
-            heard = ears.listen_for_turn(timeout_seconds=self._listen_timeout_seconds)
+            timeout_seconds = self._listen_timeout_seconds
+            if self._lan_enabled:
+                timeout_seconds = min(timeout_seconds, self._lan_poll_timeout_seconds)
+            heard = ears.listen_for_turn(timeout_seconds=timeout_seconds)
             listen_ms = (time.monotonic() - started) * 1000.0
             heard = " ".join((heard or "").split())
             if heard:
@@ -501,6 +534,10 @@ class DebateWorker(QThread):
                         and (
                             str(e.get("round_id", "")).strip() == expected_round_id
                             or bool(collected_segments)
+                            or (
+                                not collected_segments
+                                and self._event_ts(e) >= (round_started_at + self._lan_takeover_delay_seconds)
+                            )
                         )
                     )
                 )
@@ -524,6 +561,8 @@ class DebateWorker(QThread):
                     else self._opponent_followup_timeout_seconds
                 )
             )
+            if self._lan_enabled and not collected_segments:
+                timeout_seconds = min(timeout_seconds, self._lan_poll_timeout_seconds)
             started = time.monotonic()
             heard = ears.listen_for_turn(timeout_seconds=timeout_seconds)
             listen_ms = (time.monotonic() - started) * 1000.0
