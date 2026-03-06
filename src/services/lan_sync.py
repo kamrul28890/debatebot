@@ -110,6 +110,8 @@ class LanSyncBus:
             if payload.get("sender_id") == self.sender_id:
                 continue
 
+            # Local receive timestamp avoids cross-device clock-skew issues.
+            payload["_recv_ts"] = time.time()
             with self._lock:
                 self._events.append(payload)
                 # Keep queue bounded.

@@ -95,6 +95,25 @@ class DebateOrchestrator:
         if not text:
             return "trump"
 
+        directive_patterns = (
+            (r"\b(first|start|starts|begin|begins)\s+(with\s+)?(mr\.?\s+)?(president\s+)?(biden|joe)\b", "biden"),
+            (r"\b(first|start|starts|begin|begins)\s+(with\s+)?(mr\.?\s+)?(president\s+)?(trump|donald)\b", "trump"),
+            (r"\b(biden|joe)\s+(goes\s+)?(first|start|starts|begin|begins)\b", "biden"),
+            (r"\b(trump|donald)\s+(goes\s+)?(first|start|starts|begin|begins)\b", "trump"),
+        )
+        for pattern, persona in directive_patterns:
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                return persona
+
+        explicit_start = re.match(
+            r"^(hey\s+)?((mr|president)\.?\s+)?(trump|donald|biden|joe)\b",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if explicit_start:
+            starter = explicit_start.group(4).lower()
+            return "biden" if starter in {"biden", "joe"} else "trump"
+
         trump_patterns = (
             r"\bmr\.?\s+trump\b",
             r"\bpresident\s+trump\b",

@@ -15,6 +15,20 @@ def test_user_routing_selects_addressed_candidate() -> None:
     assert plan.second_speaker == "trump"
 
 
+def test_user_routing_honors_first_speaker_directive() -> None:
+    orchestrator = DebateOrchestrator(max_turns_per_persona=8)
+    plan = orchestrator.next_user_round("Biden first, then Trump. Let's discuss the economy.")
+    assert plan.first_speaker == "biden"
+    assert plan.second_speaker == "trump"
+
+
+def test_user_routing_honors_start_with_directive() -> None:
+    orchestrator = DebateOrchestrator(max_turns_per_persona=8)
+    plan = orchestrator.next_user_round("Start with Trump on border policy.")
+    assert plan.first_speaker == "trump"
+    assert plan.second_speaker == "biden"
+
+
 def test_state_machine_progression_and_completion() -> None:
     orchestrator = DebateOrchestrator(max_turns_per_persona=1)
 

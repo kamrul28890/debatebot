@@ -141,7 +141,10 @@ class DebateWorker(QThread):
         default_listen_timeout = 18 if fast_combo else 12
         self._listen_timeout_seconds = _env_int("DEBATE_LISTEN_TIMEOUT_SECONDS", default_listen_timeout)
         self._opponent_followup_timeout_seconds = _env_int("DEBATE_OPPONENT_FOLLOWUP_TIMEOUT_SECONDS", 4)
+        self._opponent_end_confirm_timeout_seconds = _env_int("DEBATE_OPPONENT_END_CONFIRM_TIMEOUT_SECONDS", 2)
         self._moderator_echo_guard_seconds = _env_float("DEBATE_MODERATOR_ECHO_GUARD_SECONDS", 1.3, minimum=0.1)
+        self._cue_sync_grace_seconds = _env_float("DEBATE_CUE_SYNC_GRACE_SECONDS", 0.45, minimum=0.05)
+        self._interrupt_min_delay_seconds = _env_float("DEBATE_INTERRUPT_MIN_DELAY_SECONDS", 0.7, minimum=0.0)
         self._target_turn_seconds = _env_float("DEBATE_TARGET_SECONDS_PER_TURN", 30.0, minimum=10.0)
         self._speech_words_per_second = _env_float("DEBATE_WORDS_PER_SECOND", 2.1, minimum=1.0)
         self._max_turns_per_persona = _env_int("DEBATE_MAX_TURNS_PER_PERSONA", 8)
@@ -219,6 +222,7 @@ class DebateWorker(QThread):
             f"({self._turn_min_words}-{self._turn_max_words} words) | "
             f"listen timeout: {self._listen_timeout_seconds}s | "
             f"opponent follow-up: {self._opponent_followup_timeout_seconds}s | "
+            f"end-confirm: {self._opponent_end_confirm_timeout_seconds}s | "
             f"moderator echo guard: {self._moderator_echo_guard_seconds:.1f}s"
         )
         self._startup_messages.append(
@@ -270,7 +274,7 @@ class DebateWorker(QThread):
         if ears is None:
             while self._running and self.orchestrator.can_continue():
                 event = self._take_lan_event(
-                    lambda e: e.get("type") == "moderator_cue" and float(e.get("ts", 0.0)) > self._last_cue_ts
+                    lambda e: e.get("type") == "moderator_cue" and self._event_ts(e) > self._last_cue_ts
                 )
                 if event:
                     cue = self._cue_from_event(event, source="lan")
@@ -304,13 +308,14 @@ class DebateWorker(QThread):
                         self.sig_ticker.emit("Ignored non-moderator audio; waiting for moderator cue.")
                     continue
                 cue = self._cue_from_text(heard, source="audio", listen_ms=listen_ms)
-                self._last_cue_ts = cue.ts
                 self._publish_moderator_cue(cue)
+                cue = self._harmonize_audio_cue(cue)
+                self._last_cue_ts = cue.ts
                 return cue
 
             # Priority 2: LAN fallback if no audio captured.
             event = self._take_lan_event(
-                lambda e: e.get("type") == "moderator_cue" and float(e.get("ts", 0.0)) > self._last_cue_ts
+                lambda e: e.get("type") == "moderator_cue" and self._event_ts(e) > self._last_cue_ts
             )
             if event:
                 cue = self._cue_from_event(event, source="lan")
@@ -334,7 +339,10 @@ class DebateWorker(QThread):
                 return True, outcome.interrupt_cue
 
             self.orchestrator.begin_second_speaker()
-            opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(round_started_at)
+            opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(
+                round_started_at=round_started_at,
+                expected_round_id=cue.round_id,
+            )
             if interrupt is not None:
                 return True, interrupt
             if opponent_text:
@@ -345,7 +353,10 @@ class DebateWorker(QThread):
             return False, None
 
         # Remote speaks first.
-        opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(round_started_at)
+        opponent_text, listen_ms, interrupt = self._wait_for_opponent_turn(
+            round_started_at=round_started_at,
+            expected_round_id=cue.round_id,
+        )
         if interrupt is not None:
             return True, interrupt
         if opponent_text:
@@ -365,13 +376,18 @@ class DebateWorker(QThread):
         self._last_round_finished_ts = time.time()
         return False, None
 
-    def _wait_for_opponent_turn(self, round_started_at: float) -> tuple[str, float, ModeratorCue | None]:
+    def _wait_for_opponent_turn(
+        self,
+        round_started_at: float,
+        expected_round_id: str,
+    ) -> tuple[str, float, ModeratorCue | None]:
         ears = self.runtime.ears
         if ears is None:
             return "", 0.0, None
 
         collected_segments: list[str] = []
         total_listen_ms = 0.0
+        awaiting_end_confirmation = False
 
         while self._running and self.orchestrator.can_continue():
             cue = self._take_interrupt_cue(round_started_at)
@@ -385,7 +401,11 @@ class DebateWorker(QThread):
                 lambda e: (
                     e.get("type") == "speaker_finished"
                     and e.get("persona") == self.remote_persona
-                    and float(e.get("ts", 0.0)) >= (round_started_at - 0.1)
+                    and self._event_ts(e) >= (round_started_at - 0.1)
+                    and (
+                        str(e.get("round_id", "")).strip() == expected_round_id
+                        or bool(collected_segments)
+                    )
                 )
             )
             if fallback:
@@ -408,7 +428,11 @@ class DebateWorker(QThread):
             timeout_seconds = (
                 self._listen_timeout_seconds
                 if not collected_segments
-                else self._opponent_followup_timeout_seconds
+                else (
+                    self._opponent_end_confirm_timeout_seconds
+                    if awaiting_end_confirmation
+                    else self._opponent_followup_timeout_seconds
+                )
             )
             started = time.monotonic()
             heard = ears.listen_for_turn(timeout_seconds=timeout_seconds)
@@ -417,6 +441,7 @@ class DebateWorker(QThread):
             heard = " ".join((heard or "").split())
 
             if heard:
+                awaiting_end_confirmation = False
                 if self._looks_like_moderator_cue(heard):
                     cue = self._cue_from_text(heard, source="audio", listen_ms=listen_ms)
                     self._last_cue_ts = cue.ts
@@ -433,8 +458,12 @@ class DebateWorker(QThread):
                 continue
 
             # If we already captured speech and then hit a no-speech window,
-            # treat that as end-of-turn in audio-first mode.
+            # request one extra confirmation window before handoff.
             if collected_segments:
+                if not awaiting_end_confirmation:
+                    awaiting_end_confirmation = True
+                    self.sig_ticker.emit("Opponent pause detected; confirming handoff...")
+                    continue
                 return " ".join(collected_segments).strip(), total_listen_ms, None
 
         return "", 0.0, None
@@ -650,6 +679,17 @@ class DebateWorker(QThread):
         if DebateWorker._looks_like_moderator_cue(sample):
             return True
 
+        if re.search(
+            r"\b(first|start|starts|begin|begins)\s+(with\s+)?(trump|donald|biden|joe)\b",
+            sample,
+            flags=re.IGNORECASE,
+        ) or re.search(
+            r"\b(trump|donald|biden|joe)\s+(goes\s+)?(first|start|starts|begin|begins)\b",
+            sample,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
         if re.search(r"\b(mr\.?\s+trump|mr\.?\s+biden|president\s+trump|president\s+biden)\b", sample):
             return True
 
@@ -723,6 +763,17 @@ class DebateWorker(QThread):
         if sample.startswith(("next question", "new question", "next topic")):
             return True
 
+        if re.search(
+            r"\b(first|start|starts|begin|begins)\s+(with\s+)?(trump|donald|biden|joe)\b",
+            sample,
+            flags=re.IGNORECASE,
+        ) or re.search(
+            r"\b(trump|donald|biden|joe)\s+(goes\s+)?(first|start|starts|begin|begins)\b",
+            sample,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
         if re.match(
             r"^(hey\s+)?((mr|president)\.?\s+)?(trump|biden|donald|joe)\b",
             sample,
@@ -777,7 +828,7 @@ class DebateWorker(QThread):
             first_speaker=first,
             round_id=round_id,
             source=source,
-            ts=float(event.get("ts", time.time())),
+            ts=DebateWorker._event_ts(event),
             listen_ms=0.0,
         )
 
@@ -798,6 +849,69 @@ class DebateWorker(QThread):
             text=text,
         )
 
+    def _harmonize_audio_cue(self, audio_cue: ModeratorCue) -> ModeratorCue:
+        """Audio stays primary, but accept a more specific LAN cue for this same moment."""
+        deadline = time.monotonic() + self._cue_sync_grace_seconds
+        selected = audio_cue
+
+        while self._running and time.monotonic() < deadline:
+            event = self._take_lan_event(
+                lambda e: (
+                    e.get("type") == "moderator_cue"
+                    and abs(self._event_ts(e) - audio_cue.ts) <= 2.5
+                )
+            )
+            if not event:
+                time.sleep(0.03)
+                continue
+
+            lan_cue = self._cue_from_event(event, source="lan")
+            selected = self._select_preferred_cue(audio_cue, lan_cue)
+            if selected.source == "lan" and selected.first_speaker != audio_cue.first_speaker:
+                self.sig_ticker.emit("SYNC: adopted LAN cue routing for this round.")
+            break
+
+        return selected
+
+    @staticmethod
+    def _select_preferred_cue(audio_cue: ModeratorCue, lan_cue: ModeratorCue) -> ModeratorCue:
+        audio_score = DebateWorker._cue_specificity_score(audio_cue.prompt)
+        lan_score = DebateWorker._cue_specificity_score(lan_cue.prompt)
+        if lan_score > audio_score:
+            return lan_cue
+        if audio_score > lan_score:
+            return audio_cue
+        if audio_cue.first_speaker == lan_cue.first_speaker:
+            return audio_cue
+        # Audio-first tie break.
+        return audio_cue
+
+    @staticmethod
+    def _cue_specificity_score(text: str) -> int:
+        sample = " ".join((text or "").lower().split())
+        if not sample:
+            return 0
+
+        strong_patterns = (
+            r"\b(first|start|starts|begin|begins)\s+(with\s+)?(mr\.?\s+)?(president\s+)?(trump|donald|biden|joe)\b",
+            r"\b(trump|donald|biden|joe)\s+(goes\s+)?(first|start|starts|begin|begins)\b",
+            r"^(hey\s+)?((mr|president)\.?\s+)?(trump|donald|biden|joe)\b",
+        )
+        if any(re.search(pattern, sample, flags=re.IGNORECASE) for pattern in strong_patterns):
+            return 2
+
+        if re.search(r"\b(trump|donald|biden|joe)\b", sample, flags=re.IGNORECASE):
+            return 1
+
+        return 0
+
+    @staticmethod
+    def _event_ts(event: dict) -> float:
+        try:
+            return float(event.get("_recv_ts", event.get("ts", time.time())))
+        except Exception:
+            return time.time()
+
     def _refresh_lan_backlog(self) -> None:
         events = self.lan.drain_events()
         if events:
@@ -817,7 +931,8 @@ class DebateWorker(QThread):
         event = self._take_lan_event(
             lambda e: (
                 e.get("type") == "moderator_cue"
-                and float(e.get("ts", 0.0)) > max(self._last_cue_ts, round_started_at)
+                and self._event_ts(e) > max(self._last_cue_ts, round_started_at)
+                and (time.time() - round_started_at) >= self._interrupt_min_delay_seconds
             )
         )
         if not event:
