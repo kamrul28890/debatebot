@@ -95,6 +95,10 @@ class DebateOrchestrator:
         if not text:
             return "trump"
 
+        directed = DebateOrchestrator._extract_directed_candidate(text)
+        if directed is not None:
+            return directed
+
         directive_patterns = (
             (r"\b(first|start|starts|begin|begins)\s+(with\s+)?(mr\.?\s+)?(president\s+)?(biden|joe)\b", "biden"),
             (r"\b(first|start|starts|begin|begins)\s+(with\s+)?(mr\.?\s+)?(president\s+)?(trump|donald)\b", "trump"),
@@ -137,6 +141,23 @@ class DebateOrchestrator:
         if biden_idx is None:
             return "trump"
         return "trump" if trump_idx <= biden_idx else "biden"
+
+    @staticmethod
+    def _extract_directed_candidate(text: str) -> str | None:
+        patterns = (
+            (r"\b(question|asking|ask|topic|prompt)\s+(is\s+)?(to|for)\s+((mr|president)\.?\s+)?(donald\s+)?trump\b", "trump"),
+            (r"\b(question|asking|ask|topic|prompt)\s+(is\s+)?(to|for)\s+((mr|president)\.?\s+)?(joe\s+)?biden\b", "biden"),
+            (r"\b(to|for)\s+((mr|president)\.?\s+)?(donald\s+)?trump\b", "trump"),
+            (r"\b(to|for)\s+((mr|president)\.?\s+)?(joe\s+)?biden\b", "biden"),
+            (r"\b(go to|over to|turn to)\s+((mr|president)\.?\s+)?(donald\s+)?trump\b", "trump"),
+            (r"\b(go to|over to|turn to)\s+((mr|president)\.?\s+)?(joe\s+)?biden\b", "biden"),
+            (r"\b((mr|president)\.?\s+)?(donald\s+)?trump\s+(you are up|you're up|your turn|please start|start)\b", "trump"),
+            (r"\b((mr|president)\.?\s+)?(joe\s+)?biden\s+(you are up|you're up|your turn|please start|start)\b", "biden"),
+        )
+        for pattern, persona in patterns:
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                return persona
+        return None
 
     @staticmethod
     def _first_pattern_match_index(text: str, patterns: tuple[str, ...]) -> int | None:

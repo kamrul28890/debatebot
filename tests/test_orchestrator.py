@@ -29,6 +29,22 @@ def test_user_routing_honors_start_with_directive() -> None:
     assert plan.second_speaker == "biden"
 
 
+def test_user_routing_honors_question_is_to_directive() -> None:
+    orchestrator = DebateOrchestrator(max_turns_per_persona=8)
+    plan = orchestrator.next_user_round(
+        "Okay, let's move on. My question is to Mr. Biden: what is your plan for immigration?"
+    )
+    assert plan.first_speaker == "biden"
+    assert plan.second_speaker == "trump"
+
+
+def test_user_routing_honors_over_to_directive() -> None:
+    orchestrator = DebateOrchestrator(max_turns_per_persona=8)
+    plan = orchestrator.next_user_round("Next topic. Over to President Trump, you're up.")
+    assert plan.first_speaker == "trump"
+    assert plan.second_speaker == "biden"
+
+
 def test_state_machine_progression_and_completion() -> None:
     orchestrator = DebateOrchestrator(max_turns_per_persona=1)
 

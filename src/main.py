@@ -364,6 +364,20 @@ class DebateWorker(QThread):
                     else:
                         self.sig_ticker.emit("Ignored non-moderator audio; waiting for moderator cue.")
                     continue
+
+                if self._is_transition_only_prompt(heard):
+                    self.sig_ticker.emit("Moderator transition captured; waiting for addressed question...")
+                    more_started = time.monotonic()
+                    continuation = ears.listen_for_turn(timeout_seconds=self._opponent_followup_timeout_seconds)
+                    continuation_ms = (time.monotonic() - more_started) * 1000.0
+                    continuation = " ".join((continuation or "").split())
+                    if continuation:
+                        heard = f"{heard} {continuation}".strip()
+                        listen_ms += continuation_ms
+                    else:
+                        self.sig_ticker.emit("Transition-only cue ignored; waiting for full moderator question.")
+                        continue
+
                 cue = self._cue_from_text(heard, source="audio", listen_ms=listen_ms)
                 self._publish_moderator_cue(cue)
                 cue = self._harmonize_audio_cue(cue)
@@ -1026,6 +1040,32 @@ class DebateWorker(QThread):
             "donald",
             "joe",
         }
+
+    @staticmethod
+    def _is_transition_only_prompt(text: str) -> bool:
+        sample = DebateWorker._strip_leading_fillers(text)
+        if not sample:
+            return False
+        if "?" in sample:
+            return False
+        if DebateWorker._contains_candidate_reference(sample):
+            return False
+
+        words = sample.split()
+        if len(words) > 14:
+            return False
+
+        transition_patterns = (
+            r"\bmove on\b",
+            r"\bmoving on\b",
+            r"\bmove to\b",
+            r"\bnext topic\b",
+            r"\bnew topic\b",
+            r"\bnext question\b",
+            r"\blet'?s move\b",
+            r"\bon to the next\b",
+        )
+        return any(re.search(pattern, sample, flags=re.IGNORECASE) for pattern in transition_patterns)
 
     def _cue_from_text(self, text: str, source: str, listen_ms: float = 0.0) -> ModeratorCue:
         cleaned = " ".join((text or "").split())
