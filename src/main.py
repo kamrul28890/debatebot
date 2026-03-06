@@ -144,7 +144,7 @@ class DebateWorker(QThread):
         self._opponent_end_confirm_timeout_seconds = _env_int("DEBATE_OPPONENT_END_CONFIRM_TIMEOUT_SECONDS", 2)
         self._min_opponent_turn_seconds = _env_float("DEBATE_MIN_OPPONENT_TURN_SECONDS", 12.0, minimum=0.0)
         self._moderator_echo_guard_seconds = _env_float("DEBATE_MODERATOR_ECHO_GUARD_SECONDS", 1.3, minimum=0.1)
-        self._cue_sync_grace_seconds = _env_float("DEBATE_CUE_SYNC_GRACE_SECONDS", 0.45, minimum=0.05)
+        self._cue_sync_grace_seconds = _env_float("DEBATE_CUE_SYNC_GRACE_SECONDS", 0.8, minimum=0.05)
         self._interrupt_min_delay_seconds = _env_float("DEBATE_INTERRUPT_MIN_DELAY_SECONDS", 0.7, minimum=0.0)
         self._target_turn_seconds = _env_float("DEBATE_TARGET_SECONDS_PER_TURN", 30.0, minimum=10.0)
         self._speech_words_per_second = _env_float("DEBATE_WORDS_PER_SECOND", 2.1, minimum=1.0)
@@ -705,17 +705,21 @@ class DebateWorker(QThread):
             return True
 
         if re.search(
-            r"\b(first|start|starts|begin|begins)\s+(with\s+)?(trump|donald|biden|joe)\b",
+            r"\b(first|start|starts|begin|begins)\s+(with\s+)?((mr|president)\.?\s+)?((donald|joe)\s+)?(trump|biden|donald|joe)\b",
             sample,
             flags=re.IGNORECASE,
         ) or re.search(
-            r"\b(trump|donald|biden|joe)\s+(goes\s+)?(first|start|starts|begin|begins)\b",
+            r"\b((mr|president)\.?\s+)?((donald|joe)\s+)?(trump|biden|donald|joe)\s+(goes\s+)?(first|start|starts|begin|begins)\b",
             sample,
             flags=re.IGNORECASE,
         ):
             return True
 
-        if re.search(r"\b(mr\.?\s+trump|mr\.?\s+biden|president\s+trump|president\s+biden)\b", sample):
+        if re.search(
+            r"\b(mr\.?\s+(donald\s+)?trump|mr\.?\s+(joe\s+)?biden|president\s+(donald\s+)?trump|president\s+(joe\s+)?biden)\b",
+            sample,
+            flags=re.IGNORECASE,
+        ):
             return True
 
         if sample.startswith(("welcome", "welcome to", "good evening", "tonight")) and "debate" in sample:
@@ -794,11 +798,11 @@ class DebateWorker(QThread):
             return True
 
         if re.search(
-            r"\b(first|start|starts|begin|begins)\s+(with\s+)?(trump|donald|biden|joe)\b",
+            r"\b(first|start|starts|begin|begins)\s+(with\s+)?((mr|president)\.?\s+)?((donald|joe)\s+)?(trump|biden|donald|joe)\b",
             sample,
             flags=re.IGNORECASE,
         ) or re.search(
-            r"\b(trump|donald|biden|joe)\s+(goes\s+)?(first|start|starts|begin|begins)\b",
+            r"\b((mr|president)\.?\s+)?((donald|joe)\s+)?(trump|biden|donald|joe)\s+(goes\s+)?(first|start|starts|begin|begins)\b",
             sample,
             flags=re.IGNORECASE,
         ):
@@ -944,8 +948,19 @@ class DebateWorker(QThread):
             return audio_cue
         if audio_cue.first_speaker == lan_cue.first_speaker:
             return audio_cue
-        # Audio-first tie break.
-        return audio_cue
+        # Deterministic tie break (same result on both laptops) to avoid split-brain.
+        audio_norm = " ".join(re.findall(r"[a-z0-9]+", (audio_cue.prompt or "").lower()))
+        lan_norm = " ".join(re.findall(r"[a-z0-9]+", (lan_cue.prompt or "").lower()))
+        if len(lan_norm) > len(audio_norm):
+            return lan_cue
+        if len(audio_norm) > len(lan_norm):
+            return audio_cue
+        if lan_norm < audio_norm:
+            return lan_cue
+        if audio_norm < lan_norm:
+            return audio_cue
+        # Final deterministic fallback: default starter is Trump.
+        return audio_cue if audio_cue.first_speaker == "trump" else lan_cue
 
     @staticmethod
     def _cue_specificity_score(text: str) -> int:
@@ -954,9 +969,9 @@ class DebateWorker(QThread):
             return 0
 
         strong_patterns = (
-            r"\b(first|start|starts|begin|begins)\s+(with\s+)?(mr\.?\s+)?(president\s+)?(trump|donald|biden|joe)\b",
-            r"\b(trump|donald|biden|joe)\s+(goes\s+)?(first|start|starts|begin|begins)\b",
-            r"^(hey\s+)?((mr|president)\.?\s+)?(trump|donald|biden|joe)\b",
+            r"\b(first|start|starts|begin|begins)\s+(with\s+)?((mr|president)\.?\s+)?((donald|joe)\s+)?(trump|donald|biden|joe)\b",
+            r"\b((mr|president)\.?\s+)?((donald|joe)\s+)?(trump|donald|biden|joe)\s+(goes\s+)?(first|start|starts|begin|begins)\b",
+            r"^(hey\s+)?((mr|president)\.?\s+)?((donald|joe)\s+)?(trump|donald|biden|joe)\b",
         )
         if any(re.search(pattern, sample, flags=re.IGNORECASE) for pattern in strong_patterns):
             return 2
