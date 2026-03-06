@@ -73,8 +73,9 @@ class DebateRuntime:
             )
 
         fast_stt_profile = brain_type == "azure" and voice_mode == "azure"
-        silence_timeout_ms = 1100 if fast_stt_profile else 1800
-        initial_silence_timeout_ms = 2600 if fast_stt_profile else 3200
+        # Prefer fuller moderator capture by default; env vars can still override.
+        silence_timeout_ms = 1600 if fast_stt_profile else 1800
+        initial_silence_timeout_ms = 4200 if fast_stt_profile else 4200
         self.ears = DebateListener(
             silence_timeout_ms=silence_timeout_ms,
             initial_silence_timeout_ms=initial_silence_timeout_ms,

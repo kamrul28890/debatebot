@@ -29,13 +29,13 @@ class DebateListener:
     - Configurable silence timeout
     """
 
-    def __init__(self, silence_timeout_ms: int = 1500, initial_silence_timeout_ms: int = 8000):
+    def __init__(self, silence_timeout_ms: int = 1600, initial_silence_timeout_ms: int = 4200):
         settings.require_speech()
         self._silence_timeout_ms = _env_int("DEBATE_STT_SEGMENTATION_SILENCE_MS", silence_timeout_ms)
         self._initial_silence_timeout_ms = _env_int("DEBATE_STT_INITIAL_SILENCE_MS", initial_silence_timeout_ms)
         # Cap one utterance length so recognize_once doesn't wait forever on near-continuous audio.
         self._segmentation_max_ms = _env_int("DEBATE_STT_SEGMENTATION_MAX_MS", 25000)
-        self._end_silence_timeout_ms = _env_int("DEBATE_STT_END_SILENCE_MS", 700)
+        self._end_silence_timeout_ms = _env_int("DEBATE_STT_END_SILENCE_MS", 1000)
         self._recognition_language = os.getenv("DEBATE_STT_LANGUAGE", "en-US").strip() or "en-US"
         self._phrase_hints = self._build_phrase_hints()
         self._short_utterance_allowlist = self._build_short_utterance_allowlist()

@@ -149,10 +149,10 @@ class DebateWorker(QThread):
         self._cleaned_up = False
         self._startup_messages: list[str] = []
 
-        fast_combo = self.requested_brain_type == "azure" and self.voice_mode == "azure"
-        default_listen_timeout = 18 if fast_combo else 12
+        # Use a longer default listen window so moderator prompts are captured in one utterance.
+        default_listen_timeout = 18
         self._listen_timeout_seconds = _env_int("DEBATE_LISTEN_TIMEOUT_SECONDS", default_listen_timeout)
-        self._opponent_followup_timeout_seconds = _env_int("DEBATE_OPPONENT_FOLLOWUP_TIMEOUT_SECONDS", 4)
+        self._opponent_followup_timeout_seconds = _env_int("DEBATE_OPPONENT_FOLLOWUP_TIMEOUT_SECONDS", 6)
         self._opponent_end_confirm_timeout_seconds = _env_int("DEBATE_OPPONENT_END_CONFIRM_TIMEOUT_SECONDS", 3)
         self._min_opponent_turn_seconds = _env_float("DEBATE_MIN_OPPONENT_TURN_SECONDS", 12.0, minimum=0.0)
         self._opponent_finish_event_wait_seconds = _env_float(
@@ -193,7 +193,8 @@ class DebateWorker(QThread):
         # Audio remains primary; LAN metadata acts as a failsafe handoff/cue channel.
         self._lan_enabled = _env_bool("DEBATE_ENABLE_LAN_FAILSAFE", True)
         self._lan_takeover_delay_seconds = _env_float("DEBATE_LAN_CUE_TAKEOVER_DELAY_SECONDS", 1.2, minimum=0.0)
-        self._lan_poll_timeout_seconds = _env_float("DEBATE_LAN_POLL_TIMEOUT_SECONDS", 8.0, minimum=0.5)
+        # Keep LAN fallback polling aligned with listen timeout so audio is not prematurely clipped.
+        self._lan_poll_timeout_seconds = _env_float("DEBATE_LAN_POLL_TIMEOUT_SECONDS", 18.0, minimum=0.5)
         self._lan_peer_timeout_seconds = _env_float("DEBATE_LAN_PEER_TIMEOUT_SECONDS", 6.0, minimum=1.0)
         self._sync_status_emit_interval_seconds = _env_float("DEBATE_SYNC_STATUS_EMIT_INTERVAL_SECONDS", 0.8, minimum=0.2)
         self.lan = LanSyncBus() if self._lan_enabled else None
