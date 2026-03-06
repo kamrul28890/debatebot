@@ -69,6 +69,16 @@ def _apply_transformers_compat_patch() -> None:
 
 def _best_torch_device() -> str:
     """Pick fastest available backend for local XTTS synthesis."""
+    requested = os.getenv("DEBATE_XTTS_DEVICE", "auto").strip().lower()
+    if requested in {"cpu", "mps", "cuda"}:
+        if requested == "cuda" and torch.cuda.is_available():
+            return "cuda"
+        if requested == "mps" and getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return "mps"
+        if requested == "cpu":
+            return "cpu"
+        logger.warning("[XTTS] Requested device '%s' unavailable. Falling back to auto selection.", requested)
+
     if torch.cuda.is_available():
         return "cuda"
     if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
@@ -141,6 +151,10 @@ class XTTSSpeaker:
             return
 
         self._load_model()
+
+    @property
+    def device_name(self) -> str:
+        return str(XTTSSpeaker._shared_device or "cpu")
 
     def speak(self, text: str) -> bool:
         """
@@ -404,7 +418,12 @@ class DualSpeaker:
                 self.xtts_speaker = XTTSSpeaker(persona)
                 if self.xtts_speaker._ready:
                     cached_files = self.xtts_speaker.cache_size()
-                    logger.info("[DualSpeaker:%s] XTTS ready - %s files cached", persona, cached_files)
+                    logger.info(
+                        "[DualSpeaker:%s] XTTS ready - %s files cached | device=%s",
+                        persona,
+                        cached_files,
+                        self.xtts_speaker.device_name,
+                    )
                 else:
                     logger.info("[DualSpeaker:%s] XTTS init failed - using Azure TTS", persona)
                     self.xtts_speaker = None

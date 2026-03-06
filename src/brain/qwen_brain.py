@@ -11,6 +11,7 @@ Usage:
 
 import os
 import json
+import re
 import torch
 from pathlib import Path
 from typing import Optional
@@ -65,6 +66,11 @@ class QwenBrain:
 
         self.model = None
         self.tokenizer = None
+        self.max_new_tokens = int(os.getenv("DEBATE_QWEN_MAX_NEW_TOKENS", "88"))
+        self.temperature = float(os.getenv("DEBATE_QWEN_TEMPERATURE", "0.58"))
+        self.top_p = float(os.getenv("DEBATE_QWEN_TOP_P", "0.9"))
+        self.repetition_penalty = float(os.getenv("DEBATE_QWEN_REPETITION_PENALTY", "1.18"))
+        self.no_repeat_ngram_size = int(os.getenv("DEBATE_QWEN_NO_REPEAT_NGRAM", "3"))
 
         # Load model
         self._load_model()
@@ -196,10 +202,12 @@ class QwenBrain:
                 output_ids = self.model.generate(
                     input_ids=inputs["input_ids"],
                     attention_mask=inputs.get("attention_mask"),
-                    max_new_tokens=96,
-                    temperature=0.65,
-                    top_p=0.9,
+                    max_new_tokens=self.max_new_tokens,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
                     do_sample=True,
+                    repetition_penalty=self.repetition_penalty,
+                    no_repeat_ngram_size=self.no_repeat_ngram_size,
                     pad_token_id=self.tokenizer.eos_token_id,
                     eos_token_id=self.tokenizer.eos_token_id,
                 )
@@ -221,8 +229,18 @@ class QwenBrain:
         """Build the full prompt for generation."""
         # Base system prompt (persona-specific)
         system_prompts = {
-            "trump": "You are Donald J. Trump in a presidential debate. Respond confidently, use simple language, and defend your positions strongly.",
-            "biden": "You are Joe Biden in a presidential debate. Respond thoughtfully, focus on policy details, and address your opponent respectfully."
+            "trump": (
+                "You are Donald J. Trump in a presidential debate. "
+                "Respond confidently, use simple language, directly answer the question, "
+                "include at least one concrete claim or example, and challenge the opponent's point. "
+                "Do not praise or endorse your opponent."
+            ),
+            "biden": (
+                "You are Joe Biden in a presidential debate. "
+                "Respond thoughtfully, directly answer the question, "
+                "include at least one concrete policy or factual detail, and challenge the opponent's point. "
+                "Do not praise or endorse your opponent."
+            ),
         }
 
         system = system_prompts.get(self.persona, "You are in a presidential debate.")
@@ -232,28 +250,68 @@ class QwenBrain:
         if context:
             full_prompt += f"Context: {context}\n\n"
 
-        full_prompt += f"Opponent: {prompt}\n\nYou:"
+        full_prompt += (
+            "Answer the moderator's question directly, stay on that exact topic, "
+            "and rebut the opponent's main claim. Do not output labels or instructions.\n\n"
+        )
+        full_prompt += f"Debate prompt: {prompt}\n\nYou:"
 
         return full_prompt
 
     def _clean_response(self, response: str) -> str:
         """Clean up the generated response."""
-        # Remove any system prompts that might have leaked
-        response = response.split("System:")[0].strip()
-        response = response.split("Context:")[0].strip()
-        response = response.split("Opponent:")[0].strip()
-
-        # Remove common artifacts
-        artifacts = ["You:", "Response:", "Answer:"]
+        # Remove prompt scaffolding that may leak from the model.
+        artifacts = [
+            "System:",
+            "Context:",
+            "Opponent:",
+            "Debate prompt:",
+            "Task:",
+            "Instruction:",
+            "You:",
+            "Response:",
+            "Answer:",
+        ]
         for artifact in artifacts:
-            if response.startswith(artifact):
-                response = response[len(artifact):].strip()
+            if artifact in response:
+                response = response.split(artifact)[0].strip()
+
+        response = self._dedupe_sentences(response)
+        response = re.sub(
+            r"\b(you are up|your turn|over to you)\b\.?$",
+            "",
+            response,
+            flags=re.IGNORECASE,
+        ).strip()
 
         # Limit length
         if len(response) > 500:
             response = response[:500] + "..."
 
+        if response and response[-1] not in ".!?":
+            response += "."
         return response.strip()
+
+    @staticmethod
+    def _dedupe_sentences(text: str) -> str:
+        sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text or "") if s.strip()]
+        if not sentences:
+            return text.strip()
+
+        seen: dict[str, int] = {}
+        kept: list[str] = []
+        for sentence in sentences:
+            norm = re.sub(r"[^a-z0-9\s]", "", sentence.lower()).strip()
+            if not norm:
+                continue
+            count = seen.get(norm, 0)
+            if count >= 1 and len(norm.split()) >= 3:
+                continue
+            seen[norm] = count + 1
+            kept.append(sentence)
+
+        merged = " ".join(kept).strip()
+        return merged if merged else text.strip()
 
     def unload_model(self):
         """Unload model from memory."""

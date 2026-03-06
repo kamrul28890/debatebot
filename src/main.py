@@ -137,8 +137,11 @@ class DebateWorker(QThread):
         self._cleaned_up = False
         self._startup_messages: list[str] = []
 
-        self._listen_timeout_seconds = _env_int("DEBATE_LISTEN_TIMEOUT_SECONDS", 18)
+        fast_combo = self.requested_brain_type == "azure" and self.voice_mode == "azure"
+        default_listen_timeout = 18 if fast_combo else 12
+        self._listen_timeout_seconds = _env_int("DEBATE_LISTEN_TIMEOUT_SECONDS", default_listen_timeout)
         self._opponent_followup_timeout_seconds = _env_int("DEBATE_OPPONENT_FOLLOWUP_TIMEOUT_SECONDS", 4)
+        self._moderator_echo_guard_seconds = _env_float("DEBATE_MODERATOR_ECHO_GUARD_SECONDS", 1.3, minimum=0.1)
         self._target_turn_seconds = _env_float("DEBATE_TARGET_SECONDS_PER_TURN", 30.0, minimum=10.0)
         self._speech_words_per_second = _env_float("DEBATE_WORDS_PER_SECOND", 2.1, minimum=1.0)
         self._max_turns_per_persona = _env_int("DEBATE_MAX_TURNS_PER_PERSONA", 8)
@@ -159,6 +162,8 @@ class DebateWorker(QThread):
         self._lan_backlog: list[dict] = []
         self._last_cue_ts = 0.0
         self._pending_cue: ModeratorCue | None = None
+        self._last_round_finished_ts = 0.0
+        self._recent_turn_texts: list[str] = []
 
         self.checker = _NoopChecker()
         self.sfx = _NoopSfx()
@@ -213,7 +218,8 @@ class DebateWorker(QThread):
             f"target turn: ~{int(self._target_turn_seconds)}s "
             f"({self._turn_min_words}-{self._turn_max_words} words) | "
             f"listen timeout: {self._listen_timeout_seconds}s | "
-            f"opponent follow-up: {self._opponent_followup_timeout_seconds}s"
+            f"opponent follow-up: {self._opponent_followup_timeout_seconds}s | "
+            f"moderator echo guard: {self._moderator_echo_guard_seconds:.1f}s"
         )
         self._startup_messages.append(
             "SYNC POLICY: audio-first moderation/opponent detection; LAN cue/turn fallback enabled."
@@ -275,6 +281,14 @@ class DebateWorker(QThread):
             return None
 
         while self._running and self.orchestrator.can_continue():
+            # Brief guard right after a round to avoid trailing candidate audio
+            # being mistaken for a new moderator cue.
+            if self._last_round_finished_ts > 0:
+                delta = time.time() - self._last_round_finished_ts
+                if delta < self._moderator_echo_guard_seconds:
+                    time.sleep(0.08)
+                    continue
+
             self.sig_set_listening.emit("moderator")
 
             # Priority 1: audio capture.
@@ -283,6 +297,12 @@ class DebateWorker(QThread):
             listen_ms = (time.monotonic() - started) * 1000.0
             heard = " ".join((heard or "").split())
             if heard:
+                if not self._looks_like_moderator_prompt(heard):
+                    if self._is_recent_turn_echo(heard):
+                        self.sig_ticker.emit("Ignored candidate echo while waiting for moderator cue.")
+                    else:
+                        self.sig_ticker.emit("Ignored non-moderator audio; waiting for moderator cue.")
+                    continue
                 cue = self._cue_from_text(heard, source="audio", listen_ms=listen_ms)
                 self._last_cue_ts = cue.ts
                 self._publish_moderator_cue(cue)
@@ -321,6 +341,7 @@ class DebateWorker(QThread):
                 self._record_remote_turn(opponent_text, listen_ms)
 
             self.orchestrator.finish_round()
+            self._last_round_finished_ts = time.time()
             return False, None
 
         # Remote speaks first.
@@ -341,6 +362,7 @@ class DebateWorker(QThread):
             return True, outcome.interrupt_cue
 
         self.orchestrator.finish_round()
+        self._last_round_finished_ts = time.time()
         return False, None
 
     def _wait_for_opponent_turn(self, round_started_at: float) -> tuple[str, float, ModeratorCue | None]:
@@ -483,6 +505,7 @@ class DebateWorker(QThread):
         self.sig_stop_speaking.emit(self.persona)
 
         self.orchestrator.record_candidate_turn(self.persona)
+        self._remember_recent_turn(reply)
         turns = self.orchestrator.turns_spoken
         self.sig_ticker.emit(f"TURN COUNT | TRUMP={turns['trump']} | BIDEN={turns['biden']}")
 
@@ -514,6 +537,7 @@ class DebateWorker(QThread):
     def _record_remote_turn(self, opponent_text: str, listen_ms: float) -> None:
         if not opponent_text.strip():
             return
+        self._remember_recent_turn(opponent_text)
         self.orchestrator.record_candidate_turn(self.remote_persona)
         turns = self.orchestrator.turns_spoken
         self.sig_ticker.emit(f"OPPONENT ({self.remote_persona.upper()}): {opponent_text}")
@@ -565,7 +589,8 @@ class DebateWorker(QThread):
         return (
             f"Moderator question: {moderator_prompt}\n\n"
             f"Opponent ({opponent_name}) said: {opponent_text}\n\n"
-            "Respond directly to the moderator question and rebut the opponent's main claim."
+            "Respond directly to the moderator question, stay strictly on that topic, and rebut the opponent's main claim. "
+            "Do not praise or endorse the opponent."
         )
 
     @staticmethod
@@ -587,6 +612,103 @@ class DebateWorker(QThread):
         if current:
             chunks.append(current)
         return chunks if chunks else [text]
+
+    def _remember_recent_turn(self, text: str) -> None:
+        clean = " ".join((text or "").split())
+        if not clean:
+            return
+        self._recent_turn_texts.append(clean)
+        if len(self._recent_turn_texts) > 6:
+            self._recent_turn_texts = self._recent_turn_texts[-6:]
+
+    @staticmethod
+    def _normalize_for_match(text: str) -> str:
+        lowered = " ".join((text or "").lower().split())
+        return re.sub(r"[^a-z0-9\s]", "", lowered).strip()
+
+    def _is_recent_turn_echo(self, heard: str) -> bool:
+        heard_norm = self._normalize_for_match(heard)
+        if len(heard_norm.split()) < 3:
+            return False
+
+        for recent in reversed(self._recent_turn_texts):
+            recent_norm = self._normalize_for_match(recent)
+            if not recent_norm:
+                continue
+            if heard_norm == recent_norm:
+                return True
+            if len(heard_norm.split()) >= 4 and (heard_norm in recent_norm or recent_norm in heard_norm):
+                return True
+        return False
+
+    @staticmethod
+    def _looks_like_moderator_prompt(text: str) -> bool:
+        sample = " ".join((text or "").lower().split())
+        if not sample:
+            return False
+
+        if DebateWorker._looks_like_moderator_cue(sample):
+            return True
+
+        if re.search(r"\b(mr\.?\s+trump|mr\.?\s+biden|president\s+trump|president\s+biden)\b", sample):
+            return True
+
+        topical_starters = (
+            "lets ",
+            "let's ",
+            "moving on",
+            "new topic",
+            "next topic",
+            "question for",
+            "i want to ask",
+            "talk about",
+            "on the topic of",
+        )
+        if any(sample.startswith(prefix) for prefix in topical_starters):
+            return True
+
+        words = sample.split()
+        # Allow short moderator-style topic directives (e.g., "security and economy first")
+        # while still requiring topic signals to reduce accidental triggers.
+        if 2 <= len(words) <= 12:
+            topic_words = (
+                "economy",
+                "inflation",
+                "jobs",
+                "tax",
+                "trade",
+                "immigration",
+                "border",
+                "healthcare",
+                "crime",
+                "security",
+                "foreign",
+                "ukraine",
+                "russia",
+                "china",
+                "nato",
+                "education",
+                "climate",
+                "energy",
+            )
+            directive_words = (
+                "first",
+                "next",
+                "topic",
+                "question",
+                "discuss",
+                "talk",
+                "address",
+                "focus",
+            )
+            topic_hits = sum(1 for token in topic_words if token in sample)
+            has_directive = any(token in sample for token in directive_words)
+            if (has_directive and topic_hits >= 1) or topic_hits >= 2:
+                return True
+
+        if "?" in sample and len(words) <= 45:
+            return True
+        return False
 
     @staticmethod
     def _looks_like_moderator_cue(text: str) -> bool:

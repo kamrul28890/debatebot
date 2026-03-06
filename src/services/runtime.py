@@ -72,8 +72,29 @@ class DebateRuntime:
                 f"Voice fallback active for {self.local_persona.upper()}: XTTS unavailable; using Azure TTS."
             )
 
-        # Slightly longer silence windows reduce premature end-of-turn detection.
-        self.ears = DebateListener(silence_timeout_ms=1800, initial_silence_timeout_ms=3200)
+        fast_stt_profile = brain_type == "azure" and voice_mode == "azure"
+        silence_timeout_ms = 1100 if fast_stt_profile else 1800
+        initial_silence_timeout_ms = 2600 if fast_stt_profile else 3200
+        self.ears = DebateListener(
+            silence_timeout_ms=silence_timeout_ms,
+            initial_silence_timeout_ms=initial_silence_timeout_ms,
+        )
+        startup_messages.append(
+            f"STT profile: {'FAST' if fast_stt_profile else 'STABLE'} "
+            f"(segmentation={silence_timeout_ms}ms, initial={initial_silence_timeout_ms}ms)"
+        )
+
+        if voice_mode == "xtts" and self.speaker.xtts_speaker is not None:
+            startup_messages.append(f"XTTS device: {self.speaker.xtts_speaker.device_name.upper()}")
+
+        if not fast_stt_profile:
+            # Prime recognizer once to reduce first-turn cold-start lag on heavier runtimes.
+            try:
+                self.ears.listen_for_turn(timeout_seconds=2)
+                startup_messages.append("STT warm-up: complete")
+            except Exception as exc:
+                startup_messages.append(f"STT warm-up skipped: {exc}")
+
         self.sfx = SoundEffectsEngine()
 
         try:

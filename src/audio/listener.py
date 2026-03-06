@@ -94,6 +94,29 @@ class DebateListener:
             time.sleep(0.2)
             self.recognizer = self._build_recognizer()
 
+    @staticmethod
+    def _recognize_once_with_timeout(recognizer: speechsdk.SpeechRecognizer, timeout_seconds: float):
+        done = threading.Event()
+        payload: dict[str, object] = {"result": None, "error": None}
+
+        def _worker() -> None:
+            try:
+                payload["result"] = recognizer.recognize_once_async().get()
+            except Exception as exc:
+                payload["error"] = exc
+            finally:
+                done.set()
+
+        threading.Thread(target=_worker, daemon=True).start()
+        if not done.wait(timeout=max(0.2, float(timeout_seconds))):
+            raise TimeoutError(f"recognize_once timeout after {timeout_seconds:.1f}s")
+        err = payload["error"]
+        if isinstance(err, Exception):
+            raise err
+        if err is not None:
+            raise RuntimeError(str(err))
+        return payload["result"]
+
     # ── Public API ─────────────────────────────────────────────────────────────
 
     def mute_for(self, seconds: float):
@@ -144,7 +167,12 @@ class DebateListener:
                 recognizer = self.recognizer
 
             try:
-                result = recognizer.recognize_once_async().get()
+                remaining = max(0.1, deadline - time.time())
+                result = self._recognize_once_with_timeout(recognizer, timeout_seconds=remaining)
+            except TimeoutError:
+                logger.info("STT listen timeout reached after %.1fs", timeout_seconds)
+                self._reset_recognizer("listen timeout")
+                return ""
             except Exception as exc:
                 detail = str(exc)
                 logger.warning("STT recognize_once failed: %s", detail)

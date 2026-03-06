@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 from typing import Optional
 
 import openai
@@ -192,8 +193,20 @@ class DebateBrain:
             context_parts.append(f"Recent debate history:\n{history_text.strip()}")
         qwen_context = "\n\n".join(context_parts) if context_parts else None
 
+        previous_assistant = self._last_assistant_reply()
         try:
             reply = self.qwen_brain.generate_response(opponent_text, qwen_context)
+            if self._is_near_duplicate(reply, previous_assistant):
+                logger.info("[Brain:%s] Qwen duplicate detected; requesting alternate phrasing", self.persona)
+                retry_parts = list(context_parts)
+                retry_parts.append(
+                    "Do NOT repeat your previous wording. "
+                    "Give a fresh, concrete rebuttal with at least one specific detail."
+                )
+                retry_context = "\n\n".join(retry_parts)
+                alt_reply = self.qwen_brain.generate_response(opponent_text, retry_context)
+                if alt_reply and not self._is_near_duplicate(alt_reply, previous_assistant):
+                    reply = alt_reply
         except Exception as exc:
             logger.error("[Brain:%s] Qwen generation error: %s", self.persona, exc)
             reply = self._fallback_response()
@@ -202,6 +215,24 @@ class DebateBrain:
         self.history.append({"role": "assistant", "content": reply})
 
         return reply
+
+    def _last_assistant_reply(self) -> str:
+        for msg in reversed(self.history):
+            if msg.get("role") == "assistant":
+                return str(msg.get("content", ""))
+        return ""
+
+    @staticmethod
+    def _is_near_duplicate(candidate: str, previous: str) -> bool:
+        c = " ".join((candidate or "").lower().split())
+        p = " ".join((previous or "").lower().split())
+        if not c or not p:
+            return False
+        if c == p:
+            return True
+        if len(c.split()) >= 6 and (c in p or p in c):
+            return True
+        return False
 
     def generate_interjection(self) -> str:
         """Quick one-liner interjection when opponent is still talking."""
@@ -235,15 +266,23 @@ class DebateBrain:
         """
         parts = [self.persona_prompt]
 
-        # After opener, rotate topic every N turns.
-        if self.turn_count > 1 and (self.turn_count - 1) % self.topic_rotation_turns == 0:
-            self.topic_index = (self.topic_index + 1) % len(DEBATE_TOPICS)
+        moderator_topic = self._extract_moderator_question(opponent_text)
+        if moderator_topic:
+            parts.append(
+                "[DEBATE NOTE: Moderator question to answer right now: "
+                f"{moderator_topic}. Stay strictly on this topic, directly answer the question, "
+                "and rebut the opponent's claim when provided. Do not praise or endorse the opponent.]"
+            )
+        else:
+            # After opener, rotate topic every N turns when no explicit moderator question is provided.
+            if self.turn_count > 1 and (self.turn_count - 1) % self.topic_rotation_turns == 0:
+                self.topic_index = (self.topic_index + 1) % len(DEBATE_TOPICS)
 
-        topic = DEBATE_TOPICS[self.topic_index]
-        parts.append(
-            "[DEBATE NOTE: Keep your answer focused on this topic: "
-            f"{topic}. Use 2-4 sentences, roughly 40-60 words, and end on a complete sentence.]"
-        )
+            topic = DEBATE_TOPICS[self.topic_index]
+            parts.append(
+                "[DEBATE NOTE: Keep your answer focused on this topic: "
+                f"{topic}. Use 2-4 sentences, roughly 40-60 words, and end on a complete sentence.]"
+            )
 
         rag_block = self._get_rag_block(opponent_text)
         if rag_block:
@@ -253,6 +292,16 @@ class DebateBrain:
             self.rag_misses += 1
 
         return "\n".join(parts)
+
+    @staticmethod
+    def _extract_moderator_question(text: str) -> Optional[str]:
+        match = re.search(r"moderator question:\s*(.+?)(?:\n|$)", text or "", flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            return None
+        question = " ".join(match.group(1).split()).strip()
+        if not question:
+            return None
+        return question[:240]
 
     def _get_rag_block(self, query: str) -> Optional[str]:
         """

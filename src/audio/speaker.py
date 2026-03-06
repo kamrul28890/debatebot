@@ -160,7 +160,7 @@ class DebateSpeaker:
         if self.persona == "trump":
             safe_text = re.sub(
                 r"\b([A-Z]{2,})\b",
-                r"<emphasis level=\"strong\">\1</emphasis>",
+                r'<emphasis level="strong">\1</emphasis>',
                 safe_text,
             )
 
