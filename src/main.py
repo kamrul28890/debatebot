@@ -143,6 +143,16 @@ class DebateWorker(QThread):
         self._opponent_followup_timeout_seconds = _env_int("DEBATE_OPPONENT_FOLLOWUP_TIMEOUT_SECONDS", 4)
         self._opponent_end_confirm_timeout_seconds = _env_int("DEBATE_OPPONENT_END_CONFIRM_TIMEOUT_SECONDS", 2)
         self._min_opponent_turn_seconds = _env_float("DEBATE_MIN_OPPONENT_TURN_SECONDS", 12.0, minimum=0.0)
+        self._opponent_finish_event_wait_seconds = _env_float(
+            "DEBATE_OPPONENT_FINISH_EVENT_WAIT_SECONDS",
+            2.5,
+            minimum=0.0,
+        )
+        self._second_speaker_start_delay_seconds = _env_float(
+            "DEBATE_SECOND_SPEAKER_START_DELAY_SECONDS",
+            1.2,
+            minimum=0.0,
+        )
         self._moderator_echo_guard_seconds = _env_float("DEBATE_MODERATOR_ECHO_GUARD_SECONDS", 1.3, minimum=0.1)
         self._cue_sync_grace_seconds = _env_float("DEBATE_CUE_SYNC_GRACE_SECONDS", 0.8, minimum=0.05)
         self._interrupt_min_delay_seconds = _env_float("DEBATE_INTERRUPT_MIN_DELAY_SECONDS", 0.7, minimum=0.0)
@@ -162,7 +172,9 @@ class DebateWorker(QThread):
         self.orchestrator = DebateOrchestrator(max_turns_per_persona=self._max_turns_per_persona)
         self.metrics = DebateMetrics()
 
-        self.lan = LanSyncBus()
+        # User requested audio-only synchronization (no LAN fallback/interruption paths).
+        self._lan_enabled = False
+        self.lan = LanSyncBus() if self._lan_enabled else None
         self._lan_backlog: list[dict] = []
         self._last_cue_ts = 0.0
         self._pending_cue: ModeratorCue | None = None
@@ -203,7 +215,8 @@ class DebateWorker(QThread):
             voice_mode=self.voice_mode,
         )
 
-        self.lan.start()
+        if self._lan_enabled and self.lan is not None:
+            self.lan.start()
 
         if self.runtime.checker is not None:
             self.checker = self.runtime.checker
@@ -227,10 +240,12 @@ class DebateWorker(QThread):
             f"opponent follow-up: {self._opponent_followup_timeout_seconds}s | "
             f"end-confirm: {self._opponent_end_confirm_timeout_seconds}s | "
             f"min opponent turn: {self._min_opponent_turn_seconds:.0f}s | "
+            f"finish-event wait: {self._opponent_finish_event_wait_seconds:.1f}s | "
+            f"second-speaker delay: {self._second_speaker_start_delay_seconds:.1f}s | "
             f"moderator echo guard: {self._moderator_echo_guard_seconds:.1f}s"
         )
         self._startup_messages.append(
-            "SYNC POLICY: audio-first moderation/opponent detection; LAN cue/turn fallback enabled."
+            "SYNC POLICY: audio-only moderation/opponent detection; LAN sync disabled."
         )
         self._startup_messages.extend(result.startup_messages)
 
@@ -277,14 +292,15 @@ class DebateWorker(QThread):
         ears = self.runtime.ears
         if ears is None:
             while self._running and self.orchestrator.can_continue():
-                event = self._take_lan_event(
-                    lambda e: e.get("type") == "moderator_cue" and self._event_ts(e) > self._last_cue_ts
-                )
-                if event:
-                    cue = self._cue_from_event(event, source="lan")
-                    self._last_cue_ts = cue.ts
-                    self.sig_ticker.emit("SYNC FALLBACK: accepted moderator cue from LAN.")
-                    return cue
+                if self._lan_enabled:
+                    event = self._take_lan_event(
+                        lambda e: e.get("type") == "moderator_cue" and self._event_ts(e) > self._last_cue_ts
+                    )
+                    if event:
+                        cue = self._cue_from_event(event, source="lan")
+                        self._last_cue_ts = cue.ts
+                        self.sig_ticker.emit("SYNC FALLBACK: accepted moderator cue from LAN.")
+                        return cue
                 time.sleep(0.1)
             return None
 
@@ -317,15 +333,16 @@ class DebateWorker(QThread):
                 self._last_cue_ts = cue.ts
                 return cue
 
-            # Priority 2: LAN fallback if no audio captured.
-            event = self._take_lan_event(
-                lambda e: e.get("type") == "moderator_cue" and self._event_ts(e) > self._last_cue_ts
-            )
-            if event:
-                cue = self._cue_from_event(event, source="lan")
-                self._last_cue_ts = cue.ts
-                self.sig_ticker.emit("SYNC FALLBACK: accepted moderator cue from LAN.")
-                return cue
+            if self._lan_enabled:
+                # Priority 2: LAN fallback if no audio captured.
+                event = self._take_lan_event(
+                    lambda e: e.get("type") == "moderator_cue" and self._event_ts(e) > self._last_cue_ts
+                )
+                if event:
+                    cue = self._cue_from_event(event, source="lan")
+                    self._last_cue_ts = cue.ts
+                    self.sig_ticker.emit("SYNC FALLBACK: accepted moderator cue from LAN.")
+                    return cue
 
         return None
 
@@ -369,6 +386,10 @@ class DebateWorker(QThread):
             if opponent_text:
                 self._record_remote_turn(opponent_text, listen_ms)
 
+            interrupt = self._sleep_until_second_speaker(round_started_at)
+            if interrupt is not None:
+                return True, interrupt
+
             self.orchestrator.begin_second_speaker()
             outcome = self._speak_local_turn(
                 prompt=self._build_second_turn_prompt(cue.prompt, opponent_text),
@@ -407,34 +428,29 @@ class DebateWorker(QThread):
                 self.sig_ticker.emit("INTERRUPT: new moderator cue received (LAN).")
                 return "", 0.0, cue
 
-            # Accept remote completion as authoritative handoff; round_id may differ
-            # when both machines hear moderator audio independently.
-            fallback = self._take_lan_event(
-                lambda e: (
-                    e.get("type") == "speaker_finished"
-                    and e.get("persona") == self.remote_persona
-                    and self._event_ts(e) >= (round_started_at - 0.1)
-                    and (
-                        str(e.get("round_id", "")).strip() == expected_round_id
-                        or bool(collected_segments)
+            if self._lan_enabled:
+                # Accept remote completion as authoritative handoff; round_id may differ
+                # when both machines hear moderator audio independently.
+                fallback = self._take_lan_event(
+                    lambda e: (
+                        e.get("type") == "speaker_finished"
+                        and e.get("persona") == self.remote_persona
+                        and self._event_ts(e) >= (round_started_at - 0.1)
+                        and (
+                            str(e.get("round_id", "")).strip() == expected_round_id
+                            or bool(collected_segments)
+                        )
                     )
                 )
-            )
-            if fallback:
-                payload_text = " ".join(str(fallback.get("text", "")).split())
-                if payload_text:
+                if fallback:
+                    resolved = self._resolve_remote_finish_payload(
+                        event=fallback,
+                        collected_segments=collected_segments,
+                    )
+                    if resolved:
+                        return resolved, total_listen_ms, None
                     if collected_segments:
-                        local_audio_text = " ".join(collected_segments).strip()
-                        if len(payload_text.split()) >= len(local_audio_text.split()):
-                            self.sig_ticker.emit("SYNC FALLBACK: using LAN opponent turn payload.")
-                            return payload_text, total_listen_ms, None
-                        merged = " ".join([local_audio_text, payload_text]).strip()
-                        self.sig_ticker.emit("SYNC FALLBACK: merging audio+LAN opponent payload.")
-                        return merged, total_listen_ms, None
-                    self.sig_ticker.emit("SYNC FALLBACK: using LAN opponent turn payload.")
-                    return payload_text, total_listen_ms, None
-                if collected_segments:
-                    return " ".join(collected_segments).strip(), total_listen_ms, None
+                        return " ".join(collected_segments).strip(), total_listen_ms, None
 
             self.sig_set_listening.emit(self.persona)
             timeout_seconds = (
@@ -489,6 +505,22 @@ class DebateWorker(QThread):
                             )
                             floor_notice_sent = True
                         continue
+
+                if self._lan_enabled and self._opponent_finish_event_wait_seconds > 0:
+                    final_event = self._wait_for_remote_finish_event(
+                        expected_round_id=expected_round_id,
+                        round_started_at=round_started_at,
+                        allow_round_mismatch_if_audio=bool(collected_segments),
+                        wait_seconds=self._opponent_finish_event_wait_seconds,
+                    )
+                    if final_event:
+                        resolved = self._resolve_remote_finish_payload(
+                            event=final_event,
+                            collected_segments=collected_segments,
+                        )
+                        if resolved:
+                            self.sig_ticker.emit("SYNC: finalized handoff from LAN completion event.")
+                            return resolved, total_listen_ms, None
                 return " ".join(collected_segments).strip(), total_listen_ms, None
 
         return "", 0.0, None
@@ -898,6 +930,8 @@ class DebateWorker(QThread):
         )
 
     def _publish_moderator_cue(self, cue: ModeratorCue) -> None:
+        if not self._lan_enabled or self.lan is None:
+            return
         self.lan.publish(
             "moderator_cue",
             prompt=cue.prompt,
@@ -907,6 +941,8 @@ class DebateWorker(QThread):
         )
 
     def _publish_local_turn(self, round_id: str, text: str) -> None:
+        if not self._lan_enabled or self.lan is None:
+            return
         self.lan.publish(
             "speaker_finished",
             persona=self.persona,
@@ -914,8 +950,67 @@ class DebateWorker(QThread):
             text=text,
         )
 
+    def _wait_for_remote_finish_event(
+        self,
+        expected_round_id: str,
+        round_started_at: float,
+        allow_round_mismatch_if_audio: bool,
+        wait_seconds: float,
+    ) -> dict | None:
+        if not self._lan_enabled:
+            return None
+        deadline = time.monotonic() + max(0.0, wait_seconds)
+        while self._running:
+            event = self._take_lan_event(
+                lambda e: (
+                    e.get("type") == "speaker_finished"
+                    and e.get("persona") == self.remote_persona
+                    and self._event_ts(e) >= (round_started_at - 0.1)
+                    and (
+                        str(e.get("round_id", "")).strip() == expected_round_id
+                        or allow_round_mismatch_if_audio
+                    )
+                )
+            )
+            if event:
+                return event
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.03)
+        return None
+
+    def _resolve_remote_finish_payload(self, event: dict, collected_segments: list[str]) -> str:
+        payload_text = " ".join(str(event.get("text", "")).split())
+        if payload_text:
+            if collected_segments:
+                local_audio_text = " ".join(collected_segments).strip()
+                if len(payload_text.split()) >= len(local_audio_text.split()):
+                    self.sig_ticker.emit("SYNC FALLBACK: using LAN opponent turn payload.")
+                    return payload_text
+                merged = " ".join([local_audio_text, payload_text]).strip()
+                self.sig_ticker.emit("SYNC FALLBACK: merging audio+LAN opponent payload.")
+                return merged
+            self.sig_ticker.emit("SYNC FALLBACK: using LAN opponent turn payload.")
+            return payload_text
+        return ""
+
+    def _sleep_until_second_speaker(self, round_started_at: float) -> ModeratorCue | None:
+        delay = max(0.0, self._second_speaker_start_delay_seconds)
+        if delay <= 0:
+            return None
+
+        deadline = time.monotonic() + delay
+        while self._running and time.monotonic() < deadline:
+            cue = self._take_interrupt_cue(round_started_at)
+            if cue is not None:
+                return cue
+            time.sleep(0.04)
+        return None
+
     def _harmonize_audio_cue(self, audio_cue: ModeratorCue) -> ModeratorCue:
         """Audio stays primary, but accept a more specific LAN cue for this same moment."""
+        if not self._lan_enabled:
+            return audio_cue
         deadline = time.monotonic() + self._cue_sync_grace_seconds
         selected = audio_cue
 
@@ -1008,11 +1103,15 @@ class DebateWorker(QThread):
         return shared / float(max(1, min(len(a_tokens), len(b_tokens))))
 
     def _refresh_lan_backlog(self) -> None:
+        if not self._lan_enabled or self.lan is None:
+            return
         events = self.lan.drain_events()
         if events:
             self._lan_backlog.extend(events)
 
     def _take_lan_event(self, predicate) -> dict | None:
+        if not self._lan_enabled:
+            return None
         self._refresh_lan_backlog()
         for idx, event in enumerate(self._lan_backlog):
             try:
@@ -1023,6 +1122,8 @@ class DebateWorker(QThread):
         return None
 
     def _take_interrupt_cue(self, round_started_at: float) -> ModeratorCue | None:
+        if not self._lan_enabled:
+            return None
         while True:
             event = self._take_lan_event(
                 lambda e: (
@@ -1131,10 +1232,11 @@ class DebateWorker(QThread):
             return
         self._cleaned_up = True
 
-        try:
-            self.lan.stop()
-        except Exception:
-            pass
+        if self._lan_enabled and self.lan is not None:
+            try:
+                self.lan.stop()
+            except Exception:
+                pass
 
         try:
             self.runtime.close()
