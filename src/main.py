@@ -786,8 +786,20 @@ class DebateWorker(QThread):
         )
 
     @staticmethod
-    def _looks_like_moderator_prompt(text: str) -> bool:
+    def _strip_leading_fillers(text: str) -> str:
         sample = " ".join((text or "").lower().split())
+        if not sample:
+            return sample
+        return re.sub(
+            r"^(ok|okay|well|so|now|alright|all right|uh|um|ah|hmm)[,\s:;-]+",
+            "",
+            sample,
+            flags=re.IGNORECASE,
+        ).strip()
+
+    @staticmethod
+    def _looks_like_moderator_prompt(text: str) -> bool:
+        sample = DebateWorker._strip_leading_fillers(text)
         if not sample:
             return False
 
@@ -818,6 +830,8 @@ class DebateWorker(QThread):
         topical_starters = (
             "lets ",
             "let's ",
+            "move on",
+            "move to",
             "moving on",
             "new topic",
             "next topic",
@@ -877,7 +891,7 @@ class DebateWorker(QThread):
 
     @staticmethod
     def _looks_like_moderator_cue(text: str) -> bool:
-        sample = " ".join((text or "").lower().split())
+        sample = DebateWorker._strip_leading_fillers(text)
         if not sample:
             return False
 
@@ -887,7 +901,7 @@ class DebateWorker(QThread):
         if len(words) == 1:
             return words[0] in {"trump", "donald", "biden", "joe", "next"}
 
-        if sample.startswith(("next question", "new question", "next topic")):
+        if sample.startswith(("next question", "new question", "next topic", "move on", "moving on", "let's move")):
             return True
 
         if re.search(
@@ -915,6 +929,9 @@ class DebateWorker(QThread):
             "when ",
             "where ",
             "who ",
+            "is ",
+            "will ",
+            "would ",
             "should ",
             "are we",
             "do we",
@@ -931,6 +948,9 @@ class DebateWorker(QThread):
             if len(words) <= 16 and (explicit_address or second_person or collective_question):
                 return True
 
+        if "?" in sample and len(words) <= 40 and re.search(r"\b(you|your)\b", sample):
+            return True
+
         return False
 
     @staticmethod
@@ -940,10 +960,13 @@ class DebateWorker(QThread):
             return False
 
         words = re.findall(r"[a-z0-9']+", sample)
-        if len(words) < 6:
+        if len(words) < 3:
             return False
 
         if DebateWorker._looks_like_moderator_prompt(sample):
+            return False
+
+        if sample.endswith("?"):
             return False
 
         if re.search(r"\b(i|we|my|our)\b", sample):
@@ -951,6 +974,9 @@ class DebateWorker(QThread):
 
         if re.search(r"\b(look[, ]+folks|here'?s the deal|let me tell you|c['’]?mon man|everybody knows it)\b", sample):
             return True
+
+        if len(words) < 6:
+            return False
 
         policy_terms = (
             "economy",
