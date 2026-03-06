@@ -168,6 +168,9 @@ class DebateWorker(QThread):
         self._moderator_echo_guard_seconds = _env_float("DEBATE_MODERATOR_ECHO_GUARD_SECONDS", 1.3, minimum=0.1)
         self._cue_sync_grace_seconds = _env_float("DEBATE_CUE_SYNC_GRACE_SECONDS", 0.8, minimum=0.05)
         self._interrupt_min_delay_seconds = _env_float("DEBATE_INTERRUPT_MIN_DELAY_SECONDS", 0.7, minimum=0.0)
+        # When enabled, non-moderator speech can start a synthetic round while waiting.
+        # Keep this off by default to avoid auto-looping after a completed round.
+        self._audio_resync_enabled = _env_bool("DEBATE_ENABLE_AUDIO_RESYNC", False)
         self._target_turn_seconds = _env_float("DEBATE_TARGET_SECONDS_PER_TURN", 30.0, minimum=10.0)
         self._speech_words_per_second = _env_float("DEBATE_WORDS_PER_SECOND", 2.1, minimum=1.0)
         self._max_turns_per_persona = _env_int("DEBATE_MAX_TURNS_PER_PERSONA", 8)
@@ -270,6 +273,10 @@ class DebateWorker(QThread):
             self._startup_messages.append("SYNC POLICY: audio-primary + LAN metadata failsafe enabled.")
         else:
             self._startup_messages.append("SYNC POLICY: audio-only moderation/opponent detection; LAN sync disabled.")
+        self._startup_messages.append(
+            "AUDIO RESYNC: "
+            + ("enabled (non-moderator speech may trigger synthetic round)." if self._audio_resync_enabled else "disabled (wait for explicit moderator cue).")
+        )
         self._startup_messages.extend(result.startup_messages)
 
         bootstrap_ms = (time.monotonic() - started) * 1000.0
@@ -385,7 +392,7 @@ class DebateWorker(QThread):
                 if not (self._is_startup_short_topic_cue(heard) or self._looks_like_moderator_prompt(heard)):
                     if self._is_recent_turn_echo(heard):
                         self.sig_ticker.emit("Ignored candidate echo while waiting for moderator cue.")
-                    elif self._looks_like_opponent_opening(heard):
+                    elif self._audio_resync_enabled and self._looks_like_opponent_opening(heard):
                         self._prefetched_opponent_segment = heard
                         synthetic = self._cue_from_text(heard, source="audio_resync", listen_ms=listen_ms)
                         cue = ModeratorCue(
