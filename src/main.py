@@ -168,6 +168,9 @@ class DebateWorker(QThread):
         self._moderator_echo_guard_seconds = _env_float("DEBATE_MODERATOR_ECHO_GUARD_SECONDS", 1.3, minimum=0.1)
         self._cue_sync_grace_seconds = _env_float("DEBATE_CUE_SYNC_GRACE_SECONDS", 0.8, minimum=0.05)
         self._interrupt_min_delay_seconds = _env_float("DEBATE_INTERRUPT_MIN_DELAY_SECONDS", 0.7, minimum=0.0)
+        self._cue_coalesce_enabled = _env_bool("DEBATE_ENABLE_CUE_COALESCE", True)
+        self._cue_coalesce_window_seconds = _env_float("DEBATE_CUE_COALESCE_WINDOW_SECONDS", 2.4, minimum=0.2)
+        self._cue_coalesce_max_segments = _env_int("DEBATE_CUE_COALESCE_MAX_SEGMENTS", 2)
         # When enabled, non-moderator speech can start a synthetic round while waiting.
         # Keep this off by default to avoid auto-looping after a completed round.
         self._audio_resync_enabled = _env_bool("DEBATE_ENABLE_AUDIO_RESYNC", False)
@@ -266,6 +269,7 @@ class DebateWorker(QThread):
             f"finish-event wait: {self._opponent_finish_event_wait_seconds:.1f}s | "
             f"second-speaker delay: {self._second_speaker_start_delay_seconds:.1f}s | "
             f"moderator echo guard: {self._moderator_echo_guard_seconds:.1f}s | "
+            f"cue coalesce: {self._cue_coalesce_window_seconds:.1f}s x{self._cue_coalesce_max_segments} | "
             f"LAN takeover delay: {self._lan_takeover_delay_seconds:.1f}s | "
             f"LAN poll timeout: {self._lan_poll_timeout_seconds:.1f}s"
         )
@@ -276,6 +280,15 @@ class DebateWorker(QThread):
         self._startup_messages.append(
             "AUDIO RESYNC: "
             + ("enabled (non-moderator speech may trigger synthetic round)." if self._audio_resync_enabled else "disabled (wait for explicit moderator cue).")
+        )
+        self._startup_messages.append(
+            "CUE COALESCE: "
+            + (
+                f"enabled (buffer up to {self._cue_coalesce_max_segments} segment(s), "
+                f"{self._cue_coalesce_window_seconds:.1f}s each)."
+                if self._cue_coalesce_enabled
+                else "disabled."
+            )
         )
         self._startup_messages.extend(result.startup_messages)
 
@@ -389,7 +402,9 @@ class DebateWorker(QThread):
             listen_ms = (time.monotonic() - started) * 1000.0
             heard = " ".join((heard or "").split())
             if heard:
-                if not (self._is_startup_short_topic_cue(heard) or self._looks_like_moderator_prompt(heard)):
+                is_startup_short = self._is_startup_short_topic_cue(heard)
+                looks_moderator = self._looks_like_moderator_prompt(heard)
+                if not (is_startup_short or looks_moderator):
                     if self._is_recent_turn_echo(heard):
                         self.sig_ticker.emit("Ignored candidate echo while waiting for moderator cue.")
                     elif self._audio_resync_enabled and self._looks_like_opponent_opening(heard):
@@ -424,6 +439,11 @@ class DebateWorker(QThread):
                     else:
                         self.sig_ticker.emit("Transition-only cue ignored; waiting for full moderator question.")
                         continue
+
+                if self._cue_coalesce_enabled and not is_startup_short:
+                    heard, coalesce_ms = self._coalesce_moderator_prompt(heard, ears)
+                    if coalesce_ms > 0:
+                        listen_ms += coalesce_ms
 
                 cue = self._cue_from_text(heard, source="audio", listen_ms=listen_ms)
                 self._publish_moderator_cue(cue)
@@ -1120,6 +1140,110 @@ class DebateWorker(QThread):
             r"\bon to the next\b",
         )
         return any(re.search(pattern, sample, flags=re.IGNORECASE) for pattern in transition_patterns)
+
+    def _coalesce_moderator_prompt(self, prompt: str, ears) -> tuple[str, float]:
+        if not self._cue_coalesce_enabled or ears is None:
+            return prompt, 0.0
+
+        merged = " ".join((prompt or "").split())
+        if not merged:
+            return merged, 0.0
+
+        added_ms = 0.0
+        segments_used = 0
+
+        while segments_used < self._cue_coalesce_max_segments and self._looks_like_partial_moderator_prompt(merged):
+            self.sig_ticker.emit("Moderator cue seems partial; waiting for continuation...")
+            started = time.monotonic()
+            continuation = ears.listen_for_turn(timeout_seconds=self._cue_coalesce_window_seconds)
+            added_ms += (time.monotonic() - started) * 1000.0
+            continuation = " ".join((continuation or "").split())
+            if not continuation:
+                break
+
+            if self._is_recent_turn_echo(continuation):
+                segments_used += 1
+                self.sig_ticker.emit("Ignored echo while extending moderator cue.")
+                continue
+
+            # If the next segment sounds like a candidate response, do not append it.
+            if self._looks_like_opponent_opening(continuation) and not self._looks_like_moderator_prompt(continuation):
+                self._prefetched_opponent_segment = continuation
+                self.sig_ticker.emit("Stopped cue extension; continuation sounded like candidate speech.")
+                break
+
+            merged = f"{merged} {continuation}".strip()
+            segments_used += 1
+
+        return merged, added_ms
+
+    def _looks_like_partial_moderator_prompt(self, text: str) -> bool:
+        sample = self._strip_leading_fillers(text)
+        if not sample:
+            return False
+
+        words = re.findall(r"[a-z0-9']+", sample)
+        if not words:
+            return False
+        if len(words) <= 2:
+            return True
+
+        if self._is_transition_only_prompt(sample):
+            return True
+
+        if self._contains_candidate_reference(sample) and "?" not in sample and len(words) <= 6:
+            return True
+
+        if sample.endswith("?"):
+            if len(words) <= 7:
+                topic_terms = (
+                    "economy",
+                    "inflation",
+                    "jobs",
+                    "tax",
+                    "trade",
+                    "immigration",
+                    "border",
+                    "healthcare",
+                    "security",
+                    "iran",
+                    "ukraine",
+                    "nato",
+                    "china",
+                    "greenland",
+                )
+                if not any(token in sample for token in topic_terms):
+                    return True
+
+        trailing_tokens = {
+            "if",
+            "when",
+            "as",
+            "to",
+            "for",
+            "with",
+            "and",
+            "or",
+            "that",
+            "about",
+            "regarding",
+            "on",
+            "in",
+            "at",
+            "of",
+            "are",
+            "is",
+            "will",
+            "would",
+            "should",
+            "could",
+            "do",
+            "did",
+        }
+        if len(words) <= 16 and words[-1] in trailing_tokens:
+            return True
+
+        return False
 
     def _cue_from_text(self, text: str, source: str, listen_ms: float = 0.0) -> ModeratorCue:
         cleaned = " ".join((text or "").split())
